@@ -214,7 +214,8 @@ model Resource {                            // SOPs, links, media pool
 
 model Setting { key String @id  value Json }
 // keys: rates {va, leadVa, lm} in cents, tier1Countries [ISO-2],
-// blockedDomains [..], timezone, payoutCurrency, clickMatchWindowMin
+// blockedDomains [..], timezone, payoutCurrency, clickMatchWindowMin,
+// supportTelegram (handle the drawer's "Report a Problem" opens; empty = disabled)
 
 model AuditLog {
   id       String   @id @default(cuid())
@@ -434,7 +435,8 @@ Payout sending is **manual for launch** (export → send from the agency's walle
 | Can Lead VAs mark accounts banned, or only Director? | Director only |
 | Timezone for weeks | GMT+2 |
 | Tier 1 countries | US, CA, GB, AU, NZ, IE + editable list |
-| Password reset | None for users; creator/Director can regenerate |
+| Password reset | None for users; creator/Director can regenerate. Regenerating ends all of that user's existing sessions (`User.sessionVersion`) |
+| "Report a Problem" destination | **Decided:** opens a Telegram chat with a support handle (`supportTelegram` setting). Handle TBD; item disabled until set |
 
 ---
 

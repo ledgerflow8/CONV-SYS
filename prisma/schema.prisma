@@ -60,6 +60,8 @@ model User {
   id             String     @id @default(cuid())
   username       String     @unique // portal login, e.g. didi_nimi_LVA
   passwordHash   String
+  // Bumped on every password change; sessions carrying an older value are rejected.
+  sessionVersion Int        @default(0)
   role           Role
   status         UserStatus @default(ACTIVE)
   parentId       String? // VA→LeadVA, LeadVA→LM, LM→Director
