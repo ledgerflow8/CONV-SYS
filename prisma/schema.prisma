@@ -1,0 +1,280 @@
+// Source of truth for shape: PLAN.md §3. Money is integer cents.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum Role {
+  DIRECTOR
+  LEAD_MANAGER
+  LEAD_VA
+  VA
+}
+
+enum UserStatus {
+  ACTIVE
+  FIRED
+  DISABLED
+}
+
+enum TgStatus {
+  AVAILABLE
+  ASSIGNED
+  BANNED
+  RETIRED
+}
+
+enum ConvoStatus {
+  PENDING
+  QUALIFIED
+  REJECTED
+  REVIEW
+}
+
+enum CountrySrc {
+  PHONE
+  CLICK
+  MANUAL
+  UNKNOWN
+}
+
+enum WeekStatus {
+  OPEN
+  LOCKED
+  PAID
+}
+
+enum PayStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+model User {
+  id             String     @id @default(cuid())
+  username       String     @unique // portal login, e.g. didi_nimi_LVA
+  passwordHash   String
+  role           Role
+  status         UserStatus @default(ACTIVE)
+  parentId       String? // VA→LeadVA, LeadVA→LM, LM→Director
+  parent         User?      @relation("tree", fields: [parentId], references: [id])
+  children       User[]     @relation("tree")
+  modelId        String? // set on LEAD_VA (team model); VAs inherit
+  model          Model?     @relation(fields: [modelId], references: [id])
+  telegramHandle String? // the person's own TG @handle
+  telegramUserId BigInt?    @unique // bound when they /start the bot
+  walletAddress  String? // 0x + 40 hex, one per user
+  createdById    String?
+  createdBy      User?      @relation("createdBy", fields: [createdById], references: [id])
+  created        User[]     @relation("createdBy")
+  createdAt      DateTime   @default(now())
+  firedAt        DateTime?
+
+  tgAccount      TgAccount?
+  assignments    TgAssignment[]
+  trackingLink   TrackingLink?
+  clicks         LinkClick[]
+  convosAsVa     Convo[]        @relation("convoVa")
+  convosAsLeadVa Convo[]        @relation("convoLeadVa")
+  convosAsLm     Convo[]        @relation("convoLm")
+  payouts        Payout[]
+  inviteTokens   InviteToken[]
+  auditLogs      AuditLog[]
+
+  @@index([parentId])
+  @@index([role, status])
+}
+
+model Model {
+  id     String  @id @default(cuid())
+  name   String  @unique
+  active Boolean @default(true)
+
+  users      User[]
+  tgAccounts TgAccount[]
+  convos     Convo[]
+  resources  Resource[]
+}
+
+model TgAccount {
+  id         String   @id @default(cuid())
+  modelId    String
+  model      Model    @relation(fields: [modelId], references: [id])
+  username   String   @unique // sophiejetlag
+  phone      String // +1309...
+  link       String // https://t.me/sophiejetlag
+  status     TgStatus @default(AVAILABLE)
+  vaId       String?  @unique // current holder (null if not assigned)
+  va         User?    @relation(fields: [vaId], references: [id])
+  sessionRef String? // later: encrypted session for reply detection
+  notes      String?
+  createdAt  DateTime @default(now())
+
+  assignments TgAssignment[]
+  clicks      LinkClick[]
+  convos      Convo[]
+
+  @@index([modelId, status])
+}
+
+model TgAssignment {
+  id          String    @id @default(cuid())
+  tgAccountId String
+  tgAccount   TgAccount @relation(fields: [tgAccountId], references: [id])
+  vaId        String
+  va          User      @relation(fields: [vaId], references: [id])
+  startedAt   DateTime  @default(now())
+  endedAt     DateTime?
+  endReason   String? // fired | banned | reassigned
+
+  @@index([tgAccountId, startedAt])
+  @@index([vaId])
+}
+
+model TrackingLink {
+  id     String  @id @default(cuid())
+  slug   String  @unique // /v/k3j9x2
+  vaId   String  @unique
+  va     User    @relation(fields: [vaId], references: [id])
+  active Boolean @default(true)
+
+  clicks LinkClick[]
+}
+
+model LinkClick {
+  id          String       @id @default(cuid())
+  linkId      String
+  link        TrackingLink @relation(fields: [linkId], references: [id])
+  vaId        String
+  va          User         @relation(fields: [vaId], references: [id])
+  tgAccountId String? // account the click was redirected to
+  tgAccount   TgAccount?   @relation(fields: [tgAccountId], references: [id])
+  country     String? // ISO-2 from geo header
+  referrer    String?
+  refDomain   String?
+  blocked     Boolean      @default(false)
+  ipHash      String? // salted hash, never raw IP
+  userAgent   String?
+  createdAt   DateTime     @default(now())
+
+  convos Convo[]
+
+  @@index([vaId, tgAccountId, createdAt])
+}
+
+model Convo {
+  id            String      @id @default(cuid())
+  tgAccountId   String
+  tgAccount     TgAccount   @relation(fields: [tgAccountId], references: [id])
+  peerId        String // the person on the other end (TG user id)
+  peerPhone     String?
+  // attribution, snapshotted at qualification time
+  vaId          String?
+  va            User?       @relation("convoVa", fields: [vaId], references: [id])
+  leadVaId      String?
+  leadVa        User?       @relation("convoLeadVa", fields: [leadVaId], references: [id])
+  leadManagerId String?
+  leadManager   User?       @relation("convoLm", fields: [leadManagerId], references: [id])
+  modelId       String?
+  model         Model?      @relation(fields: [modelId], references: [id])
+  weekId        String?
+  week          Week?       @relation(fields: [weekId], references: [id])
+  // qualification
+  country       String?
+  countrySource CountrySrc  @default(UNKNOWN)
+  clickId       String?
+  click         LinkClick?  @relation(fields: [clickId], references: [id])
+  source        String? // ref domain if known
+  firstMsgAt    DateTime
+  repliedAt     DateTime?
+  status        ConvoStatus @default(PENDING)
+  rejectReason  String?
+  qualifiedAt   DateTime?
+  // rates snapshot (cents)
+  vaCents       Int         @default(0)
+  leadVaCents   Int         @default(0)
+  lmCents       Int         @default(0)
+  createdAt     DateTime    @default(now())
+
+  @@unique([tgAccountId, peerId]) // one person counts once per account
+  @@index([vaId, weekId, status])
+  @@index([leadVaId, weekId, status])
+  @@index([leadManagerId, weekId, status])
+  @@index([status])
+}
+
+model Week {
+  id       String     @id @default(cuid())
+  startsAt DateTime   @unique
+  endsAt   DateTime
+  status   WeekStatus @default(OPEN)
+
+  convos  Convo[]
+  payouts Payout[]
+}
+
+model Payout {
+  id            String    @id @default(cuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id])
+  weekId        String
+  week          Week      @relation(fields: [weekId], references: [id])
+  role          Role
+  convos        Int
+  amountCents   Int
+  walletAddress String? // snapshot at lock time
+  status        PayStatus @default(PENDING)
+  txHash        String?
+  paidAt        DateTime?
+
+  @@unique([userId, weekId])
+}
+
+model InviteToken {
+  id          String    @id @default(cuid())
+  tokenHash   String    @unique
+  userId      String
+  user        User      @relation(fields: [userId], references: [id])
+  // Generated password, encrypted with ENCRYPTION_KEY. Wiped once the bot delivers it.
+  passwordEnc String?
+  expiresAt   DateTime
+  usedAt      DateTime?
+}
+
+model Resource {
+  id        String   @id @default(cuid())
+  modelId   String? // null = all models
+  model     Model?   @relation(fields: [modelId], references: [id])
+  section   String // SOP | TG_MEDIA | CREATOR_TEMPLATE | MEDIA_POOL
+  category  String? // PFPs, Post Pictures, ...
+  title     String
+  url       String? // SOP link
+  filePath  String? // Supabase Storage path
+  sort      Int      @default(0)
+  createdAt DateTime @default(now())
+}
+
+// keys: rates {va, leadVa, lm} in cents, tier1Countries [ISO-2],
+// blockedDomains [..], timezone, payoutCurrency, clickMatchWindowMin
+model Setting {
+  key   String @id
+  value Json
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  actor     User?    @relation(fields: [actorId], references: [id])
+  action    String
+  target    String?
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
