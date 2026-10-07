@@ -1,45 +1,42 @@
 import { TriangleAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { LiveRefresh } from "@/components/live-refresh";
+import { StatCard, WalletBanner } from "@/components/stat-card";
 import { TopBar } from "@/components/shell/top-bar";
 import { requireRole } from "@/lib/auth/session";
 import { db } from "@/lib/db";
+import { formatCents } from "@/lib/money";
 import { scopeFor } from "@/lib/scope";
+import { currentPeriods, inWeek, poolHealth, qualifiedTotals, qualifiedTotalsBy } from "@/lib/stats";
 import { EMPTY_POOL_MESSAGE } from "@/lib/team";
 import { AddVaButton, VaRowActions } from "./team-controls";
 
 export default async function LeadVaDashboard() {
   const user = await requireRole("LEAD_VA");
   const scope = scopeFor(user);
+  const { week } = await currentPeriods();
 
-  const [model, available, team] = await Promise.all([
+  const [model, team, teamWeek, byVa, pool] = await Promise.all([
     user.modelId ? db.model.findUnique({ where: { id: user.modelId }, select: { name: true } }) : null,
-    db.tgAccount.count({ where: { AND: [scope.tgAccount, { status: "AVAILABLE" }] } }),
     db.user.findMany({
       where: { AND: [scope.user, { role: "VA", parentId: user.id, status: "ACTIVE" }] },
       orderBy: { createdAt: "desc" },
-      select: {
-        id: true,
-        username: true,
-        telegramUserId: true,
-        tgAccount: { select: { username: true, status: true } },
-      },
+      select: { id: true, username: true, telegramUserId: true, tgAccount: { select: { username: true, status: true } } },
     }),
+    qualifiedTotals(user, inWeek(week)),
+    qualifiedTotalsBy(user, "vaId", inWeek(week)),
+    poolHealth(user),
   ]);
+  const teamPool = pool.find((p) => p.modelId === user.modelId);
+  const available = teamPool?.counts.AVAILABLE ?? 0;
   const poolEmpty = available === 0;
 
   return (
     <>
       <TopBar title="Dashboard" emoji="📊" />
-
-      {!user.walletAddress && (
-        <div className="mb-4 flex gap-2 rounded-xl border border-red-300 bg-red-50 p-3 text-sm text-red-900 dark:border-red-800 dark:bg-red-950 dark:text-red-100">
-          <TriangleAlert className="mt-0.5 size-4 shrink-0" />
-          <p>
-            <strong>Payout address missing.</strong> Add your wallet on the Payouts page so you can get paid.
-          </p>
-        </div>
-      )}
+      <LiveRefresh />
+      {!user.walletAddress && <WalletBanner />}
 
       <div className="mb-4 flex items-center gap-2 text-sm">
         <span className="text-muted-foreground">Team model</span>
@@ -47,8 +44,10 @@ export default async function LeadVaDashboard() {
       </div>
 
       <div className="mb-4 grid grid-cols-2 gap-3">
-        <Stat label="My VAs" value={team.length} />
-        <Stat label={`${model?.name ?? "Model"} Telegrams available`} value={available} danger={poolEmpty} />
+        <StatCard label="Team conversations this week (unpaid)" value={teamWeek.convos} />
+        <StatCard label="Your commission this week" value={formatCents(teamWeek.leadVaCents)} tone="good" />
+        <StatCard label="My VAs" value={team.length} />
+        <StatCard label={`${model?.name ?? "Model"} Telegrams available`} value={available} tone={poolEmpty ? "danger" : undefined} />
       </div>
 
       <div className="mb-4 space-y-2">
@@ -61,7 +60,7 @@ export default async function LeadVaDashboard() {
         )}
       </div>
 
-      <Card>
+      <Card className="mb-4">
         <CardHeader>
           <CardTitle className="text-base">My Team</CardTitle>
         </CardHeader>
@@ -74,14 +73,11 @@ export default async function LeadVaDashboard() {
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="font-medium">@{va.username}</span>
-                      {va.telegramUserId === null ? (
-                        <Badge variant="outline">Invite pending</Badge>
-                      ) : (
-                        <Badge variant="secondary">Joined</Badge>
-                      )}
+                      {va.telegramUserId === null ? <Badge variant="outline">Invite pending</Badge> : <Badge variant="secondary">Joined</Badge>}
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      {va.tgAccount ? `Account @${va.tgAccount.username}` : "No account assigned"}
+                      {va.tgAccount ? `Account @${va.tgAccount.username}` : "No account assigned"} · {byVa.get(va.id)?.convos ?? 0} qualified
+                      this week
                     </p>
                   </div>
                   <VaRowActions vaId={va.id} username={va.username} joined={va.telegramUserId !== null} />
@@ -91,18 +87,22 @@ export default async function LeadVaDashboard() {
           </ul>
         </CardContent>
       </Card>
-      <p className="mt-4 text-center text-xs text-muted-foreground">Conversations and commission arrive in Block 7.</p>
-    </>
-  );
-}
 
-function Stat({ label, value, danger }: { label: string; value: number; danger?: boolean }) {
-  return (
-    <Card className="gap-1 py-4">
-      <CardContent className="px-4">
-        <div className={danger ? "text-2xl font-bold text-destructive" : "text-2xl font-bold"}>{value}</div>
-        <div className="text-xs text-muted-foreground">{label}</div>
-      </CardContent>
-    </Card>
+      {teamPool && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Telegram pool · {teamPool.name}</CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-3 gap-2 text-center">
+            {(["AVAILABLE", "ASSIGNED", "BANNED"] as const).map((s) => (
+              <div key={s} className="rounded-lg bg-muted/60 py-2">
+                <div className="text-lg font-bold">{teamPool.counts[s]}</div>
+                <div className="text-xs text-muted-foreground capitalize">{s.toLowerCase()}</div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+    </>
   );
 }

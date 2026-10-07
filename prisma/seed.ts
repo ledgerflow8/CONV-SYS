@@ -4,10 +4,13 @@
 import { PrismaClient, Role, TgStatus } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { randomBytes } from "node:crypto";
+import { ingestConvoEvent } from "../src/lib/ingest";
 import { SETTING_DEFAULTS } from "../src/lib/settings-defaults";
 
 const db = new PrismaClient();
 const SEED_PASSWORD = "password123";
+const DAY = 24 * 60 * 60 * 1000;
+const ASSIGNED_SINCE = new Date(Date.now() - 14 * DAY);
 const RESET = process.argv.includes("--reset");
 
 function slug() {
@@ -128,20 +131,47 @@ async function main() {
           where: { id: account.id },
           data: { status: TgStatus.ASSIGNED, vaId: va.id },
         });
-        await db.tgAssignment.create({ data: { tgAccountId: account.id, vaId: va.id } });
+        await db.tgAssignment.create({ data: { tgAccountId: account.id, vaId: va.id, startedAt: ASSIGNED_SINCE } });
         await db.trackingLink.create({ data: { vaId: va.id, slug: slug() } });
       }
     }
   }
+
+  await seedConvos();
 
   const counts = {
     users: await db.user.groupBy({ by: ["role"], _count: true }),
     models: await db.model.count(),
     tgAccounts: await db.tgAccount.groupBy({ by: ["status"], _count: true }),
     trackingLinks: await db.trackingLink.count(),
+    convos: await db.convo.groupBy({ by: ["status"], _count: true }),
   };
   console.log(JSON.stringify(counts, null, 2));
   console.log(`Seeded. Log in as any user with password "${SEED_PASSWORD}" (e.g. director, alpha_LM, team1sophie_LVA, va01_sophie).`);
+}
+
+// Demo convos over the last 10 days, through the real pipeline so every number is consistent.
+async function seedConvos() {
+  const accounts = await db.tgAccount.findMany({ where: { status: "ASSIGNED" }, select: { username: true } });
+  const phones = ["+14155550100", "+16475550100", "+447400123456", "+61412345678", "+353851234567", "+2348031234567", null];
+  let seed = 7;
+  const rand = () => ((seed = (seed * 1664525 + 1013904223) % 2 ** 32) / 2 ** 32);
+  for (let i = 0; i < 150; i++) {
+    const acct = accounts[Math.floor(rand() * accounts.length)];
+    const first = Date.now() - rand() * 10 * DAY - 3600_000;
+    const replied = rand() < 0.85 ? new Date(first + rand() * 1800_000).toISOString() : undefined;
+    const r = await ingestConvoEvent(
+      {
+        tgAccount: acct.username,
+        peerId: `demo${i}`,
+        peerPhone: phones[Math.floor(rand() * phones.length)],
+        firstMsgAt: new Date(first).toISOString(),
+        repliedAt: replied,
+      },
+      { via: "api" },
+    );
+    if (!r.ok) throw new Error(`seed convo failed: ${r.error}`);
+  }
 }
 
 main()

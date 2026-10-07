@@ -23,6 +23,14 @@ export function weekBounds(at: Date, timeZone: string): { startsAt: Date; endsAt
   return { startsAt, endsAt: new Date(startsAt.getTime() + WEEK_MS) };
 }
 
+/** The [start, end) UTC instants of the org-local calendar day containing `at`. */
+export function dayBounds(at: Date, timeZone: string): { startsAt: Date; endsAt: Date } {
+  const offsetMs = offsetMinutes(timeZone) * 60 * 1000;
+  const local = new Date(at.getTime() + offsetMs);
+  const startsAt = new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate()) - offsetMs);
+  return { startsAt, endsAt: new Date(startsAt.getTime() + DAY_MS) };
+}
+
 /** Finds or creates the Week row for `at`. Safe under concurrency (unique on startsAt). */
 export async function weekFor(tx: Prisma.TransactionClient, at: Date, timeZone: string) {
   const { startsAt, endsAt } = weekBounds(at, timeZone);

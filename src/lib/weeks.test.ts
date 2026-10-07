@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { offsetMinutes, WEEK_MS, weekBounds } from "./weeks";
+import { dayBounds, offsetMinutes, WEEK_MS, weekBounds } from "./weeks";
+
+describe("dayBounds (GMT+2)", () => {
+  it("a local day runs 22:00Z → 22:00Z", () => {
+    const b = dayBounds(new Date("2026-10-07T23:30:00Z"), "Etc/GMT-2"); // Thu 01:30 local
+    expect([b.startsAt.toISOString(), b.endsAt.toISOString()]).toEqual(["2026-10-07T22:00:00.000Z", "2026-10-08T22:00:00.000Z"]);
+  });
+});
 
 const iso = (d: Date) => d.toISOString();
 
