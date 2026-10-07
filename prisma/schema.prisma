@@ -172,8 +172,11 @@ model LinkClick {
 
 model Convo {
   id            String      @id @default(cuid())
-  tgAccountId   String
-  tgAccount     TgAccount   @relation(fields: [tgAccountId], references: [id])
+  // The account's username (lowercase). Holds the dedupe key even when the account isn't
+  // in the pool yet (REVIEW: unknown_account); tgAccountId is filled once it is.
+  accountRef    String
+  tgAccountId   String?
+  tgAccount     TgAccount?  @relation(fields: [tgAccountId], references: [id])
   peerId        String // the person on the other end (TG user id)
   peerPhone     String?
   // attribution, snapshotted at qualification time
@@ -196,7 +199,8 @@ model Convo {
   firstMsgAt    DateTime
   repliedAt     DateTime?
   status        ConvoStatus @default(PENDING)
-  rejectReason  String?
+  rejectReason  String? // non_tier1 | blocked_source | review_rejected
+  reviewReason  String? // unknown_account | unattributed | unknown_country
   qualifiedAt   DateTime?
   // rates snapshot (cents)
   vaCents       Int         @default(0)
@@ -204,7 +208,8 @@ model Convo {
   lmCents       Int         @default(0)
   createdAt     DateTime    @default(now())
 
-  @@unique([tgAccountId, peerId]) // one person counts once per account
+  @@unique([accountRef, peerId]) // one person counts once per account, ever
+  @@index([tgAccountId])
   @@index([vaId, weekId, status])
   @@index([leadVaId, weekId, status])
   @@index([leadManagerId, weekId, status])

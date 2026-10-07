@@ -7,6 +7,8 @@ import { requireRole } from "@/lib/auth/session";
 import { createModel, setModelActive } from "@/lib/models";
 import { createManagedUser, regeneratePassword, setLeadManagerStatus, type Credentials } from "@/lib/people";
 import { addPoolAccount, importPoolAccounts, type ImportSummary } from "@/lib/pool";
+import { importConvosCsv, type ConvoImportSummary } from "@/lib/convo-import";
+import { retryConvo, reviewConvo, type IngestOutcome } from "@/lib/ingest";
 import { saveSettings } from "@/lib/settings";
 import { parseSettingsForm, type SettingsFormErrors } from "@/lib/settings-form";
 
@@ -114,4 +116,33 @@ export async function saveSettingsAction(
   if (!result.ok) return { ok: false, error: result.error };
   revalidatePath("/", "layout"); // timezone pill + support link appear on every page
   return { ok: true, changed: result.data.changed };
+}
+
+// ── Convos ────────────────────────────────────────────────────────────────
+
+export async function importConvosAction(text: unknown): Promise<Result<ConvoImportSummary>> {
+  const actor = await requireRole("DIRECTOR");
+  const parsed = z.string().max(5_000_000).safeParse(text);
+  if (!parsed.success) return fail("Choose a CSV file (max 5 MB).");
+  const result = await importConvosCsv(actor, parsed.data);
+  revalidatePath("/director/convos");
+  return result;
+}
+
+export async function reviewConvoAction(convoId: unknown, decision: unknown): Promise<Result<IngestOutcome>> {
+  const actor = await requireRole("DIRECTOR");
+  const parsed = z.tuple([id, z.enum(["approve", "reject"])]).safeParse([convoId, decision]);
+  if (!parsed.success) return fail("Invalid request.");
+  const result = await reviewConvo(actor, ...parsed.data);
+  revalidatePath("/director/convos");
+  return result;
+}
+
+export async function retryConvoAction(convoId: unknown): Promise<Result<IngestOutcome>> {
+  const actor = await requireRole("DIRECTOR");
+  const parsed = id.safeParse(convoId);
+  if (!parsed.success) return fail("Invalid request.");
+  const result = await retryConvo(actor, parsed.data);
+  revalidatePath("/director/convos");
+  return result;
 }

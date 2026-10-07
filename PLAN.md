@@ -140,7 +140,8 @@ model LinkClick {
 
 model Convo {
   id            String      @id @default(cuid())
-  tgAccountId   String
+  accountRef    String                      // account username (lowercase); dedupe key even before the account is in the pool
+  tgAccountId   String?                     // null while REVIEW: unknown_account
   peerId        String                      // the person on the other end (TG user id)
   peerPhone     String?
   // attribution, snapshotted at qualification time
@@ -157,7 +158,8 @@ model Convo {
   firstMsgAt    DateTime
   repliedAt     DateTime?
   status        ConvoStatus @default(PENDING)
-  rejectReason  String?
+  rejectReason  String?                     // non_tier1 | blocked_source | review_rejected
+  reviewReason  String?                     // unknown_account | unattributed | unknown_country
   qualifiedAt   DateTime?
   // rates snapshot (cents)
   vaCents       Int @default(0)
@@ -165,7 +167,7 @@ model Convo {
   lmCents       Int @default(0)
   createdAt     DateTime @default(now())
 
-  @@unique([tgAccountId, peerId])           // one person counts once per account
+  @@unique([accountRef, peerId])            // one person counts once per account
   @@index([vaId, weekId, status])
   @@index([leadVaId, weekId, status])
   @@index([leadManagerId, weekId, status])
@@ -258,6 +260,7 @@ type ConvoEvent = {
 Entry points that call it:
 
 1. `POST /api/ingest/convo` — authenticated with an API key + HMAC signature. This is where the client's AI API will post once we have its details.
+   Headers: `Authorization: Bearer <INGEST_API_KEY>`, `X-Timestamp: <unix seconds>` (±5 min), `X-Signature: sha256=<hex HMAC-SHA256(INGEST_HMAC_SECRET, "<timestamp>.<raw body>")>`. Body: one event or `{ "events": [...] }` (≤ 500). Times must be ISO 8601 with a timezone.
 2. **Director → Import convos** (CSV upload) — the launch-week path until the API is connected.
 3. Later: a Telegram session listener, if we connect accounts directly.
 
