@@ -14,13 +14,15 @@
     "db:deploy": "prisma migrate deploy",
     "db:seed": "prisma db seed",
     "db:reset-seed": "tsx prisma/seed.ts --reset",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "bot:webhook": "tsx --env-file=.env scripts/set-telegram-webhook.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
     "bcryptjs": "^3.0.3",
     "class-variance-authority": "^0.7.1",
     "cn": "^0.4.0",
+    "grammy": "^1.46.0",
     "jose": "^6.2.12",
     "libphonenumber-js": "^1.13.14",
     "lucide-react": "^1.52.0",
