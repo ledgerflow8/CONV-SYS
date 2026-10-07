@@ -59,7 +59,7 @@ async function main() {
         data: {
           modelId: model.id,
           username,
-          phone: `+1555${mi}${String(100000 + i).slice(1)}`,
+          phone: `+1309555${mi}${String(i).padStart(3, "0")}`, // 555-0xxx: reserved fictional range
           link: `https://t.me/${username}`,
         },
       });

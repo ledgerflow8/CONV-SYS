@@ -1,0 +1,233 @@
+"use client";
+
+import { useState, useTransition } from "react";
+import { Plus, Upload } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import type { ImportSummary } from "@/lib/pool";
+import { addPoolAccountAction, importPoolAction } from "../actions";
+
+type ModelOption = { id: string; name: string };
+
+function ModelSelect({ models, value, onChange }: { models: ModelOption[]; value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="space-y-2">
+      <Label htmlFor="pool-model">Model</Label>
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger id="pool-model" className="w-full">
+          <SelectValue placeholder={models.length ? "Pick a model" : "No active models"} />
+        </SelectTrigger>
+        <SelectContent>
+          {models.map((m) => (
+            <SelectItem key={m.id} value={m.id}>
+              {m.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
+export function AddAccountDialog({ models }: { models: ModelOption[] }) {
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ modelId: "", username: "", phone: "", link: "" });
+  const [error, setError] = useState<string | null>(null);
+  const [pending, startTransition] = useTransition();
+  const set = (k: keyof typeof form) => (v: string) => setForm((f) => ({ ...f, [k]: v }));
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    startTransition(async () => {
+      const result = await addPoolAccountAction({ ...form, link: form.link || undefined });
+      if (!result.ok) return setError(result.error);
+      setForm((f) => ({ modelId: f.modelId, username: "", phone: "", link: "" }));
+      setOpen(false);
+    });
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button>
+          <Plus className="size-4" />
+          Add account
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <form onSubmit={submit} className="space-y-4">
+          <DialogHeader>
+            <DialogTitle>Add Telegram account</DialogTitle>
+            <DialogDescription>It goes into the pool as available.</DialogDescription>
+          </DialogHeader>
+          <ModelSelect models={models} value={form.modelId} onChange={set("modelId")} />
+          <div className="space-y-2">
+            <Label htmlFor="acct-username">Telegram username</Label>
+            <Input
+              id="acct-username"
+              value={form.username}
+              onChange={(e) => set("username")(e.target.value)}
+              placeholder="@sophiejetlag"
+              autoCapitalize="none"
+              autoComplete="off"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="acct-phone">Phone</Label>
+            <Input
+              id="acct-phone"
+              value={form.phone}
+              onChange={(e) => set("phone")(e.target.value)}
+              placeholder="+13095550100"
+              inputMode="tel"
+              autoComplete="off"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="acct-link">Link (optional)</Label>
+            <Input
+              id="acct-link"
+              value={form.link}
+              onChange={(e) => set("link")(e.target.value)}
+              placeholder="Defaults to https://t.me/<username>"
+              autoCapitalize="none"
+              autoComplete="off"
+            />
+          </div>
+          {error && (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          )}
+          <DialogFooter>
+            <Button type="submit" disabled={pending || !form.modelId || !form.username || !form.phone}>
+              {pending ? "Adding…" : "Add account"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function ImportAccountsDialog({ models }: { models: ModelOption[] }) {
+  const [open, setOpen] = useState(false);
+  const [modelId, setModelId] = useState("");
+  const [text, setText] = useState("");
+  const [summary, setSummary] = useState<ImportSummary | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, startTransition] = useTransition();
+
+  function close(o: boolean) {
+    setOpen(o);
+    if (!o) {
+      setSummary(null);
+      setError(null);
+    }
+  }
+
+  async function loadFile(file: File | undefined) {
+    if (!file) return;
+    if (file.size > 1_000_000) return setError("File is too large (max 1 MB).");
+    setText(await file.text());
+  }
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    startTransition(async () => {
+      const result = await importPoolAction({ modelId, text });
+      if (!result.ok) return setError(result.error);
+      setSummary(result.data);
+      setText("");
+    });
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={close}>
+      <DialogTrigger asChild>
+        <Button variant="outline">
+          <Upload className="size-4" />
+          Bulk import
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-h-[90dvh] overflow-y-auto">
+        {summary ? (
+          <div className="space-y-4">
+            <DialogHeader>
+              <DialogTitle>Import finished</DialogTitle>
+              <DialogDescription>
+                Added {summary.added} {summary.added === 1 ? "account" : "accounts"}
+                {summary.rejects.length > 0 && `, skipped ${summary.rejects.length}`}.
+              </DialogDescription>
+            </DialogHeader>
+            {summary.rejects.length > 0 && (
+              <ul className="max-h-64 space-y-1 overflow-y-auto rounded-lg border p-3 text-sm">
+                {summary.rejects.map((r) => (
+                  <li key={`${r.line}-${r.raw}`}>
+                    <span className="text-muted-foreground">Line {r.line}:</span> <code className="break-all">{r.raw}</code>{" "}
+                    <span className="text-destructive">({r.reason})</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <DialogFooter>
+              <Button onClick={() => setSummary(null)} variant="outline">
+                Import more
+              </Button>
+              <Button onClick={() => close(false)}>Done</Button>
+            </DialogFooter>
+          </div>
+        ) : (
+          <form onSubmit={submit} className="space-y-4">
+            <DialogHeader>
+              <DialogTitle>Bulk import accounts</DialogTitle>
+              <DialogDescription>
+                One per line: <code>username, phone, link</code>. Link is optional. Duplicates are skipped.
+              </DialogDescription>
+            </DialogHeader>
+            <ModelSelect models={models} value={modelId} onChange={setModelId} />
+            <div className="space-y-2">
+              <Label htmlFor="import-text">Accounts</Label>
+              <Textarea
+                id="import-text"
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                rows={8}
+                placeholder={"sophiejetlag, +13095550100\nsophie_travels, +13095550101, https://t.me/sophie_travels"}
+                className="font-mono text-xs"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="import-file">…or upload a CSV</Label>
+              <Input id="import-file" type="file" accept=".csv,.txt,text/csv,text/plain" onChange={(e) => loadFile(e.target.files?.[0])} />
+            </div>
+            {error && (
+              <p role="alert" className="text-sm text-destructive">
+                {error}
+              </p>
+            )}
+            <DialogFooter>
+              <Button type="submit" disabled={pending || !modelId || !text.trim()}>
+                {pending ? "Importing…" : "Import"}
+              </Button>
+            </DialogFooter>
+          </form>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
