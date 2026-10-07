@@ -7,6 +7,8 @@ import { requireRole } from "@/lib/auth/session";
 import { createModel, setModelActive } from "@/lib/models";
 import { createManagedUser, regeneratePassword, setLeadManagerStatus, type Credentials } from "@/lib/people";
 import { addPoolAccount, importPoolAccounts, type ImportSummary } from "@/lib/pool";
+import { saveSettings } from "@/lib/settings";
+import { parseSettingsForm, type SettingsFormErrors } from "@/lib/settings-form";
 
 const id = z.string().min(1).max(64);
 
@@ -83,4 +85,33 @@ export async function setLeadManagerStatusAction(userId: unknown, status: unknow
   const result = await setLeadManagerStatus(actor, ...parsed.data);
   revalidatePath("/director/people");
   return result;
+}
+
+// ── Settings ──────────────────────────────────────────────────────────────
+
+const settingsInput = z.object({
+  rateVa: z.string().max(20),
+  rateLeadVa: z.string().max(20),
+  rateLm: z.string().max(20),
+  tier1Countries: z.string().max(2000),
+  blockedDomains: z.string().max(50_000),
+  timezone: z.string().max(40),
+  payoutCurrency: z.string().max(60),
+  clickMatchWindowMin: z.string().max(10),
+  supportTelegram: z.string().max(64),
+});
+
+export async function saveSettingsAction(
+  input: unknown,
+): Promise<{ ok: true; changed: string[] } | { ok: false; error?: string; errors?: SettingsFormErrors }> {
+  const actor = await requireRole("DIRECTOR");
+  const shape = settingsInput.safeParse(input);
+  if (!shape.success) return { ok: false, error: "Invalid request." };
+  const parsed = parseSettingsForm(shape.data);
+  if (!parsed.ok) return { ok: false, errors: parsed.errors };
+
+  const result = await saveSettings(actor, parsed.settings);
+  if (!result.ok) return { ok: false, error: result.error };
+  revalidatePath("/", "layout"); // timezone pill + support link appear on every page
+  return { ok: true, changed: result.data.changed };
 }
