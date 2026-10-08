@@ -3,6 +3,7 @@ import { CopyButton } from "@/components/copy-button";
 import { LiveRefresh } from "@/components/live-refresh";
 import { StatCard, WalletBanner } from "@/components/stat-card";
 import { TopBar } from "@/components/shell/top-bar";
+import { WalletDialog } from "@/components/wallet-dialog";
 import { requireRole } from "@/lib/auth/session";
 import { db } from "@/lib/db";
 import { trackingUrl } from "@/lib/links";
@@ -17,7 +18,7 @@ export default async function VaDashboard() {
   const scope = scopeFor(user);
   const { week, timeZone } = await currentPeriods();
 
-  const [thisWeek, byAccount, accounts, me, rates, payouts] = await Promise.all([
+  const [thisWeek, byAccount, accounts, me, rates, payouts, currency] = await Promise.all([
     qualifiedTotals(user, inWeek(week)),
     qualifiedTotalsBy(user, "tgAccountId", inWeek(week)),
     db.tgAccount.findMany({
@@ -35,13 +36,14 @@ export default async function VaDashboard() {
       take: 12,
       select: { id: true, convos: true, amountCents: true, status: true, week: { select: { startsAt: true, endsAt: true } } },
     }),
+    getSetting("payoutCurrency"),
   ]);
 
   return (
     <>
       <TopBar title="My Accounts" emoji="📱" />
       <LiveRefresh />
-      {!user.walletAddress && <WalletBanner />}
+      {!user.walletAddress && <WalletBanner currency={currency} />}
 
       <div className="mb-4 grid grid-cols-2 gap-3">
         <StatCard label="This week's earnings" value={formatCents(thisWeek.vaCents)} tone="good" hint={`${thisWeek.convos} × ${formatCents(rates.va)}`} />
@@ -97,8 +99,13 @@ export default async function VaDashboard() {
             <dt className="text-muted-foreground">Lead VA</dt>
             <dd>{me.parent ? `@${me.parent.username}` : "—"}</dd>
             <dt className="text-muted-foreground">Wallet</dt>
-            <dd className="break-all">{user.walletAddress ?? <span className="text-destructive">Not set</span>}</dd>
+            <dd className="break-all font-mono text-xs">{user.walletAddress ?? <span className="font-sans text-sm text-destructive">Not set</span>}</dd>
+            <dt className="text-muted-foreground">Currency</dt>
+            <dd>{currency}</dd>
           </dl>
+          <div className="mt-3">
+            <WalletDialog current={user.walletAddress} currency={currency} />
+          </div>
         </CardContent>
       </Card>
 
@@ -113,7 +120,9 @@ export default async function VaDashboard() {
               <li key={p.id} className="flex items-center justify-between px-6 py-2 text-sm">
                 <span>{formatPeriod(p.week, timeZone)}</span>
                 <span className="text-muted-foreground">{p.convos} convos</span>
-                <span className="font-medium">{formatCents(p.amountCents)}</span>
+                <span className="font-medium">
+                  {formatCents(p.amountCents)} <span className="text-xs font-normal text-muted-foreground">{p.status === "SENT" ? "paid" : p.status.toLowerCase()}</span>
+                </span>
               </li>
             ))}
           </ul>

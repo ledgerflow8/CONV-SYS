@@ -70,13 +70,24 @@ export function formatEventError(error: z.ZodError): string {
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
+/**
+ * Finds/creates the week and reads its status under FOR SHARE. lockWeek() takes FOR UPDATE on the
+ * same row, so a convo can never be qualified into a week while (or after) it's being locked:
+ * whichever transaction gets the row first finishes before the other proceeds.
+ */
+export async function lockedWeekFor(tx: Prisma.TransactionClient, at: Date, timeZone: string) {
+  const week = await weekFor(tx, at, timeZone);
+  const [row] = await tx.$queryRaw<{ status: string }[]>`SELECT status FROM "Week" WHERE id = ${week.id} FOR SHARE`;
+  return { ...week, status: row.status as typeof week.status };
+}
+
 /** Week for a qualified convo: the week containing repliedAt, or the first open week from now if that one is locked. */
 async function payWeek(tx: Prisma.TransactionClient, repliedAt: Date, timeZone: string) {
-  const intended = await weekFor(tx, repliedAt, timeZone);
+  const intended = await lockedWeekFor(tx, repliedAt, timeZone);
   if (intended.status === "OPEN") return { week: intended, late: false, intended };
   let at = new Date();
   for (let i = 0; i < 4; i++) {
-    const w = await weekFor(tx, at, timeZone);
+    const w = await lockedWeekFor(tx, at, timeZone);
     if (w.status === "OPEN") return { week: w, late: true, intended };
     at = weekBounds(at, timeZone).endsAt;
   }

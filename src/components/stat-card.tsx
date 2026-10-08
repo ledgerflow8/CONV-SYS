@@ -1,4 +1,5 @@
 import { Card, CardContent } from "@/components/ui/card";
+import { WalletDialog } from "@/components/wallet-dialog";
 import { cn } from "@/lib/utils";
 
 export function StatCard({
@@ -31,13 +32,14 @@ export function StatCard({
   );
 }
 
-export function WalletBanner() {
+export function WalletBanner({ currency }: { currency: string }) {
   return (
-    <div className="mb-4 flex gap-2 rounded-xl border border-red-300 bg-red-50 p-3 text-sm text-red-900 dark:border-red-800 dark:bg-red-950 dark:text-red-100">
-      <span aria-hidden>⚠️</span>
+    <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-red-300 bg-red-50 p-3 text-sm text-red-900 dark:border-red-800 dark:bg-red-950 dark:text-red-100">
       <p>
+        <span aria-hidden>⚠️ </span>
         <strong>Payout address missing.</strong> Add your wallet so you can get paid.
       </p>
+      <WalletDialog current={null} currency={currency} />
     </div>
   );
 }

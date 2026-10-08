@@ -8,6 +8,7 @@ import { requireRole } from "@/lib/auth/session";
 import { db } from "@/lib/db";
 import { formatCents } from "@/lib/money";
 import { scopeFor } from "@/lib/scope";
+import { getSetting } from "@/lib/settings";
 import { currentPeriods, inWeek, poolHealth, qualifiedTotals, qualifiedTotalsBy } from "@/lib/stats";
 import { EMPTY_POOL_MESSAGE } from "@/lib/team";
 import { AddVaButton, VaRowActions } from "./team-controls";
@@ -17,7 +18,7 @@ export default async function LeadVaDashboard() {
   const scope = scopeFor(user);
   const { week } = await currentPeriods();
 
-  const [model, team, teamWeek, byVa, pool] = await Promise.all([
+  const [model, team, teamWeek, byVa, pool, currency] = await Promise.all([
     user.modelId ? db.model.findUnique({ where: { id: user.modelId }, select: { name: true } }) : null,
     db.user.findMany({
       where: { AND: [scope.user, { role: "VA", parentId: user.id, status: "ACTIVE" }] },
@@ -27,6 +28,7 @@ export default async function LeadVaDashboard() {
     qualifiedTotals(user, inWeek(week)),
     qualifiedTotalsBy(user, "vaId", inWeek(week)),
     poolHealth(user),
+    getSetting("payoutCurrency"),
   ]);
   const teamPool = pool.find((p) => p.modelId === user.modelId);
   const available = teamPool?.counts.AVAILABLE ?? 0;
@@ -36,7 +38,7 @@ export default async function LeadVaDashboard() {
     <>
       <TopBar title="Dashboard" emoji="📊" />
       <LiveRefresh />
-      {!user.walletAddress && <WalletBanner />}
+      {!user.walletAddress && <WalletBanner currency={currency} />}
 
       <div className="mb-4 flex items-center gap-2 text-sm">
         <span className="text-muted-foreground">Team model</span>

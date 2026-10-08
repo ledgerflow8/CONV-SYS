@@ -9,6 +9,7 @@ import { createManagedUser, regeneratePassword, setLeadManagerStatus, type Crede
 import { addPoolAccount, importPoolAccounts, type ImportSummary } from "@/lib/pool";
 import { importConvosCsv, type ConvoImportSummary } from "@/lib/convo-import";
 import { retryConvo, reviewConvo, type IngestOutcome } from "@/lib/ingest";
+import { lockFinishedWeeks, lockWeek, markPayoutFailed, markPayoutPaid, refreshPayoutWallet, type LockSummary } from "@/lib/payouts";
 import { saveSettings } from "@/lib/settings";
 import { parseSettingsForm, type SettingsFormErrors } from "@/lib/settings-form";
 
@@ -144,5 +145,50 @@ export async function retryConvoAction(convoId: unknown): Promise<Result<IngestO
   if (!parsed.success) return fail("Invalid request.");
   const result = await retryConvo(actor, parsed.data);
   revalidatePath("/director/convos");
+  return result;
+}
+
+// ── Payouts ───────────────────────────────────────────────────────────────
+
+export async function lockFinishedWeeksAction(): Promise<Result<LockSummary[]>> {
+  const actor = await requireRole("DIRECTOR");
+  const results = await lockFinishedWeeks(actor.id);
+  revalidatePath("/director/payouts");
+  return { ok: true, data: results.filter((r) => !r.alreadyLocked) };
+}
+
+export async function lockWeekAction(weekId: unknown): Promise<Result<LockSummary>> {
+  const actor = await requireRole("DIRECTOR");
+  const parsed = id.safeParse(weekId);
+  if (!parsed.success) return fail("Invalid request.");
+  const result = await lockWeek(actor.id, parsed.data);
+  revalidatePath("/director/payouts", "layout");
+  return result;
+}
+
+export async function markPayoutPaidAction(payoutId: unknown, txHash: unknown): Promise<Result<null>> {
+  const actor = await requireRole("DIRECTOR");
+  const parsed = z.tuple([id, z.string().max(100)]).safeParse([payoutId, txHash]);
+  if (!parsed.success) return fail("Invalid request.");
+  const result = await markPayoutPaid(actor, ...parsed.data);
+  revalidatePath("/director/payouts", "layout");
+  return result;
+}
+
+export async function markPayoutFailedAction(payoutId: unknown): Promise<Result<null>> {
+  const actor = await requireRole("DIRECTOR");
+  const parsed = id.safeParse(payoutId);
+  if (!parsed.success) return fail("Invalid request.");
+  const result = await markPayoutFailed(actor, parsed.data);
+  revalidatePath("/director/payouts", "layout");
+  return result;
+}
+
+export async function refreshPayoutWalletAction(payoutId: unknown): Promise<Result<{ walletAddress: string }>> {
+  const actor = await requireRole("DIRECTOR");
+  const parsed = id.safeParse(payoutId);
+  if (!parsed.success) return fail("Invalid request.");
+  const result = await refreshPayoutWallet(actor, parsed.data);
+  revalidatePath("/director/payouts", "layout");
   return result;
 }

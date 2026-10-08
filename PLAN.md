@@ -51,8 +51,8 @@ Monday 00:00 → Sunday 23:59:59 in the org timezone (default `Etc/GMT-2`, shown
 | Auth | Username + password (bcrypt), session in httpOnly signed cookie (`jose`) | No email, no signup — accounts are created top-down |
 | Bot | **grammY**, webhook at `/api/telegram/webhook` | Simple, typed |
 | Phone → country | `libphonenumber-js` | Country from a phone prefix |
-| Live numbers | SWR polling every 10–15s | Good enough for launch; Realtime later |
-| Cron | Vercel Cron (or Supabase pg_cron) | Week lock on Monday 00:00 |
+| Live numbers | Server pages re-rendered every 15s while visible (`router.refresh`, `LiveRefresh`) | Same effect as SWR polling, no extra JSON endpoints; all reads stay server-side and scoped |
+| Cron | Vercel Cron → `/api/cron/lock-weeks`, daily 22:05 UTC (= Monday 00:05 GMT+2) | Locks every finished week, so a missed run or timezone change catches up; daily fits the Vercel Hobby limit |
 | Hosting | Vercel (or Netlify) | Geo header for tracking-link country |
 | Tests | Vitest | Qualification + rollup invariants |
 

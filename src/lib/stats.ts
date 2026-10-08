@@ -39,7 +39,7 @@ export async function qualifiedTotals(user: ScopeUser, extra: Prisma.ConvoWhereI
   };
 }
 
-type GroupField = "vaId" | "leadVaId" | "leadManagerId" | "tgAccountId";
+type GroupField = "vaId" | "leadVaId" | "leadManagerId" | "tgAccountId" | "weekId";
 
 /** Qualified totals grouped by a snapshotted attribution field, within the user's scope. */
 export async function qualifiedTotalsBy(
@@ -98,3 +98,51 @@ export const sumTotals = (list: Iterable<Totals>): Totals => {
   }
   return t;
 };
+
+// ── Commission (Lead VA / Lead Manager payouts pages) ─────────────────────
+
+const COMMISSION_FIELD = { VA: "vaCents", LEAD_VA: "leadVaCents", LEAD_MANAGER: "lmCents" } as const;
+
+export type CommissionSummary = {
+  currentCents: number; // this week, not paid yet
+  currentConvos: number;
+  paidToDateCents: number;
+  totalConvos: number; // all-time qualified convos they earned on
+  weeklyAverageCents: number; // over completed weeks with earnings
+  bestWeek: { startsAt: Date; endsAt: Date; cents: number } | null;
+  history: { id: string; startsAt: Date; endsAt: Date; convos: number; amountCents: number; status: string; paidAt: Date | null }[];
+};
+
+/** The user's own commission. Only their own payouts and their own commission column count. */
+export async function commissionSummary(user: ScopeUser & { role: "VA" | "LEAD_VA" | "LEAD_MANAGER" }, week: Period): Promise<CommissionSummary> {
+  const field = COMMISSION_FIELD[user.role];
+  const [current, all, byWeek, payouts] = await Promise.all([
+    qualifiedTotals(user, inWeek(week)),
+    qualifiedTotals(user),
+    qualifiedTotalsBy(user, "weekId"),
+    db.payout.findMany({
+      where: { AND: [scopeFor(user).payout, { userId: user.id }] },
+      orderBy: { week: { startsAt: "desc" } },
+      take: 26,
+      select: { id: true, convos: true, amountCents: true, status: true, paidAt: true, week: { select: { startsAt: true, endsAt: true } } },
+    }),
+  ]);
+  // Average and best week are over completed weeks only; the current week is still filling up.
+  const weeks = await db.week.findMany({
+    where: { id: { in: [...byWeek.keys()] }, startsAt: { lt: week.startsAt } },
+    select: { id: true, startsAt: true, endsAt: true },
+  });
+  const earned = weeks.map((w) => ({ ...w, cents: byWeek.get(w.id)![field] })).filter((w) => w.cents > 0);
+  const best = earned.reduce<(typeof earned)[number] | null>((b, w) => (!b || w.cents > b.cents ? w : b), null);
+  const paid = await db.payout.aggregate({ where: { userId: user.id, status: "SENT" }, _sum: { amountCents: true } });
+
+  return {
+    currentCents: current[field],
+    currentConvos: current.convos,
+    paidToDateCents: paid._sum.amountCents ?? 0,
+    totalConvos: all.convos,
+    weeklyAverageCents: earned.length ? Math.round(earned.reduce((s, w) => s + w.cents, 0) / earned.length) : 0,
+    bestWeek: best ? { startsAt: best.startsAt, endsAt: best.endsAt, cents: best.cents } : null,
+    history: payouts.map((p) => ({ id: p.id, ...p.week, convos: p.convos, amountCents: p.amountCents, status: p.status, paidAt: p.paidAt })),
+  };
+}
