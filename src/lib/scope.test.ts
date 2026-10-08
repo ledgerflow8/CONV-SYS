@@ -9,7 +9,7 @@ const u = (role: "DIRECTOR" | "LEAD_MANAGER" | "LEAD_VA" | "VA", modelId: string
 
 describe("scopeFor", () => {
   it("Director sees everything", () => {
-    expect(scopeFor(u("DIRECTOR"))).toEqual({ convo: {}, user: {}, tgAccount: {}, payout: {} });
+    expect(scopeFor(u("DIRECTOR"))).toEqual({ convo: {}, user: {}, tgAccount: {}, payout: {}, resource: {} });
   });
 
   it("scopes convos by the snapshotted id for each role", () => {
@@ -38,5 +38,11 @@ describe("scopeFor", () => {
     expect(branches).not.toContainEqual({ status: "AVAILABLE", modelId: null });
     expect(branches).not.toContainEqual(expect.objectContaining({ modelId: undefined }));
     expect(branches).toContainEqual({ id: { in: [] } });
+  });
+
+  it("resources: shared + own model; no model means shared only", () => {
+    expect(scopeFor(u("VA", "m1")).resource).toEqual({ OR: [{ modelId: null }, { modelId: "m1" }] });
+    expect(scopeFor(u("LEAD_VA", "m1")).resource).toEqual({ OR: [{ modelId: null }, { modelId: "m1" }] });
+    expect(scopeFor(u("VA", null)).resource).toEqual({ modelId: null });
   });
 });

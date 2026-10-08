@@ -16,10 +16,12 @@
     "db:reset-seed": "tsx prisma/seed.ts --reset",
     "postinstall": "prisma generate",
     "bot:webhook": "tsx --env-file=.env scripts/set-telegram-webhook.ts",
-    "test:db": "vitest run --config vitest.db.config.mts"
+    "test:db": "vitest run --config vitest.db.config.mts",
+    "storage:setup": "tsx --env-file=.env scripts/setup-storage.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
+    "@supabase/supabase-js": "^2.117.3",
     "bcryptjs": "^3.0.3",
     "class-variance-authority": "^0.7.1",
     "cn": "^0.4.0",

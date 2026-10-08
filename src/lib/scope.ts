@@ -9,15 +9,21 @@ export type Scope = {
   user: Prisma.UserWhereInput;
   tgAccount: Prisma.TgAccountWhereInput;
   payout: Prisma.PayoutWhereInput;
+  resource: Prisma.ResourceWhereInput;
 };
 
 // Matches nothing. Used where a scope can't be built (e.g. a Lead VA with no model).
 const NONE = { id: { in: [] as string[] } };
 
+// Shared resources (modelId null) plus the user's own model. No model → shared only, never everything.
+function forModel(modelId: string | null): Prisma.ResourceWhereInput {
+  return modelId ? { OR: [{ modelId: null }, { modelId }] } : { modelId: null };
+}
+
 export function scopeFor(user: ScopeUser): Scope {
   switch (user.role) {
     case "DIRECTOR":
-      return { convo: {}, user: {}, tgAccount: {}, payout: {} };
+      return { convo: {}, user: {}, tgAccount: {}, payout: {}, resource: {} };
 
     case "LEAD_MANAGER": {
       const people: Prisma.UserWhereInput = {
@@ -34,6 +40,8 @@ export function scopeFor(user: ScopeUser): Scope {
           ],
         },
         payout: { user: people },
+        // shared resources + the models their teams run
+        resource: { OR: [{ modelId: null }, { model: { users: { some: { role: "LEAD_VA", parentId: user.id } } } }] },
       };
     }
 
@@ -50,6 +58,7 @@ export function scopeFor(user: ScopeUser): Scope {
           ],
         },
         payout: { user: people },
+        resource: forModel(user.modelId),
       };
     }
 
@@ -59,6 +68,7 @@ export function scopeFor(user: ScopeUser): Scope {
         user: { id: user.id },
         tgAccount: { vaId: user.id },
         payout: { userId: user.id },
+        resource: forModel(user.modelId),
       };
   }
 }

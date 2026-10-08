@@ -10,6 +10,7 @@ import { addPoolAccount, importPoolAccounts, type ImportSummary } from "@/lib/po
 import { importConvosCsv, type ConvoImportSummary } from "@/lib/convo-import";
 import { retryConvo, reviewConvo, type IngestOutcome } from "@/lib/ingest";
 import { lockFinishedWeeks, lockWeek, markPayoutFailed, markPayoutPaid, refreshPayoutWallet, type LockSummary } from "@/lib/payouts";
+import { createResource, deleteResource, prepareUpload } from "@/lib/resources";
 import { saveSettings } from "@/lib/settings";
 import { parseSettingsForm, type SettingsFormErrors } from "@/lib/settings-form";
 
@@ -190,5 +191,34 @@ export async function refreshPayoutWalletAction(payoutId: unknown): Promise<Resu
   if (!parsed.success) return fail("Invalid request.");
   const result = await refreshPayoutWallet(actor, parsed.data);
   revalidatePath("/director/payouts", "layout");
+  return result;
+}
+
+// ── Resources ─────────────────────────────────────────────────────────────
+
+export async function prepareUploadAction(input: unknown): Promise<Result<{ path: string; signedUrl: string }>> {
+  const actor = await requireRole("DIRECTOR");
+  const parsed = z
+    .object({ filename: z.string().min(1).max(255), size: z.number().int().positive(), contentType: z.string().max(100), modelId: id.nullable() })
+    .safeParse(input);
+  if (!parsed.success) return fail("Invalid file.");
+  return prepareUpload(actor, parsed.data);
+}
+
+export async function createResourceAction(input: unknown): Promise<Result<{ id: string }>> {
+  const actor = await requireRole("DIRECTOR");
+  const result = await createResource(actor, input);
+  revalidatePath("/director/resources");
+  revalidatePath("/va/resources");
+  return result;
+}
+
+export async function deleteResourceAction(resourceId: unknown): Promise<Result<null>> {
+  const actor = await requireRole("DIRECTOR");
+  const parsed = id.safeParse(resourceId);
+  if (!parsed.success) return fail("Invalid request.");
+  const result = await deleteResource(actor, parsed.data);
+  revalidatePath("/director/resources");
+  revalidatePath("/va/resources");
   return result;
 }
