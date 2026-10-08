@@ -7,7 +7,9 @@ import { requireRole } from "@/lib/auth/session";
 import { db } from "@/lib/db";
 import { scopeFor } from "@/lib/scope";
 import { cn } from "@/lib/utils";
-import { AddAccountDialog, ImportAccountsDialog } from "./pool-controls";
+import { AccountActions, AddAccountDialog, ImportAccountsDialog } from "./pool-controls";
+import { getSetting } from "@/lib/settings";
+import { formatDateTime } from "@/lib/time";
 
 const STATUSES: TgStatus[] = ["AVAILABLE", "ASSIGNED", "BANNED", "RETIRED"];
 const LIST_LIMIT = 200;
@@ -20,6 +22,7 @@ export default async function PoolPage({
   const user = await requireRole("DIRECTOR");
   const scope = scopeFor(user);
   const sp = await searchParams;
+  const tz = await getSetting("timezone");
   const status = STATUSES.find((s) => s === sp.status);
   const q = sp.q?.trim().replace(/^@/, "").slice(0, 64);
 
@@ -49,6 +52,11 @@ export default async function PoolPage({
         status: true,
         model: { select: { name: true } },
         va: { select: { username: true } },
+        assignments: {
+          orderBy: { startedAt: "desc" },
+          take: 5,
+          select: { id: true, startedAt: true, endedAt: true, endReason: true, va: { select: { username: true } } },
+        },
       },
     }),
     db.tgAccount.count({ where }),
@@ -140,17 +148,37 @@ export default async function PoolPage({
         <ul className="divide-y">
           {accounts.length === 0 && <li className="p-4 text-sm text-muted-foreground">No accounts match.</li>}
           {accounts.map((a) => (
-            <li key={a.id} className="flex items-center justify-between gap-3 px-4 py-3">
-              <div className="min-w-0">
-                <a href={a.link} target="_blank" rel="noopener noreferrer" className="font-medium hover:underline">
-                  @{a.username}
-                </a>
-                <p className="truncate text-xs text-muted-foreground">
-                  {a.model.name} · {a.phone}
-                  {a.va && ` · held by @${a.va.username}`}
-                </p>
+            <li key={a.id} className="space-y-2 px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <a href={a.link} target="_blank" rel="noopener noreferrer" className="font-medium hover:underline">
+                    @{a.username}
+                  </a>
+                  <p className="truncate text-xs text-muted-foreground">
+                    {a.model.name} · {a.phone}
+                    {a.va && ` · held by @${a.va.username}`}
+                  </p>
+                </div>
+                <StatusBadge status={a.status} />
               </div>
-              <StatusBadge status={a.status} />
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                {a.assignments.length > 0 ? (
+                  <details className="text-xs text-muted-foreground">
+                    <summary className="cursor-pointer">History ({a.assignments.length})</summary>
+                    <ul className="mt-1 space-y-0.5 pl-3">
+                      {a.assignments.map((h) => (
+                        <li key={h.id}>
+                          @{h.va.username}: {formatDateTime(h.startedAt, tz)} →{" "}
+                          {h.endedAt ? `${formatDateTime(h.endedAt, tz)} (${h.endReason ?? "ended"})` : "now"}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                ) : (
+                  <span className="text-xs text-muted-foreground">Never assigned</span>
+                )}
+                <AccountActions accountId={a.id} username={a.username} status={a.status} holder={a.va?.username ?? null} />
+              </div>
             </li>
           ))}
         </ul>

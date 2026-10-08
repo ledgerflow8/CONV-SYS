@@ -11,6 +11,7 @@ import { importConvosCsv, type ConvoImportSummary } from "@/lib/convo-import";
 import { retryConvo, reviewConvo, type IngestOutcome } from "@/lib/ingest";
 import { lockFinishedWeeks, lockWeek, markPayoutFailed, markPayoutPaid, refreshPayoutWallet, type LockSummary } from "@/lib/payouts";
 import { createResource, deleteResource, prepareUpload } from "@/lib/resources";
+import { restoreAccount, takeAccountOutOfService, type TakeOutcome } from "@/lib/reassign";
 import { saveSettings } from "@/lib/settings";
 import { parseSettingsForm, type SettingsFormErrors } from "@/lib/settings-form";
 
@@ -220,5 +221,25 @@ export async function deleteResourceAction(resourceId: unknown): Promise<Result<
   const result = await deleteResource(actor, parsed.data);
   revalidatePath("/director/resources");
   revalidatePath("/va/resources");
+  return result;
+}
+
+// ── Ban / retire / restore ────────────────────────────────────────────────
+
+export async function takeAccountOutOfServiceAction(accountId: unknown, status: unknown): Promise<Result<TakeOutcome>> {
+  const actor = await requireRole("DIRECTOR");
+  const parsed = z.tuple([id, z.enum(["BANNED", "RETIRED"])]).safeParse([accountId, status]);
+  if (!parsed.success) return fail("Invalid request.");
+  const result = await takeAccountOutOfService(actor, ...parsed.data);
+  revalidatePath("/", "layout"); // pool, dashboards and the VA's own pages all change
+  return result;
+}
+
+export async function restoreAccountAction(accountId: unknown): Promise<Result<null>> {
+  const actor = await requireRole("DIRECTOR");
+  const parsed = id.safeParse(accountId);
+  if (!parsed.success) return fail("Invalid request.");
+  const result = await restoreAccount(actor, parsed.data);
+  revalidatePath("/", "layout");
   return result;
 }

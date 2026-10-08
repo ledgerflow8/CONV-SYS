@@ -18,7 +18,7 @@ export type Invite = { username: string; token: string; url: string | null; expi
 class Abort extends Error {}
 
 /** Locks and returns the next available account for a model, or null. Must run inside a transaction. */
-async function claimAvailableAccount(tx: Prisma.TransactionClient, modelId: string) {
+export async function claimAvailableAccount(tx: Prisma.TransactionClient, modelId: string) {
   const rows = await tx.$queryRaw<{ id: string; username: string }[]>`
     SELECT id, username FROM "TgAccount"
     WHERE "modelId" = ${modelId} AND status = 'AVAILABLE'

@@ -17,7 +17,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import type { ImportSummary } from "@/lib/pool";
-import { addPoolAccountAction, importPoolAction } from "../actions";
+import { addPoolAccountAction, importPoolAction, restoreAccountAction, takeAccountOutOfServiceAction } from "../actions";
 
 type ModelOption = { id: string; name: string };
 
@@ -229,5 +229,90 @@ export function ImportAccountsDialog({ models }: { models: ModelOption[] }) {
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+const NOTIFY_TEXT: Record<string, string> = {
+  sent: "they were notified on Telegram",
+  not_linked: "they haven't linked Telegram yet, so tell them yourself",
+  bot_not_configured: "the bot isn't set up, so tell them yourself",
+  failed: "the Telegram message failed, so tell them yourself",
+};
+
+export function AccountActions({
+  accountId,
+  username,
+  status,
+  holder,
+}: {
+  accountId: string;
+  username: string;
+  status: string;
+  holder: string | null;
+}) {
+  const [confirm, setConfirm] = useState<"BANNED" | "RETIRED" | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [pending, startTransition] = useTransition();
+  const out = status === "BANNED" || status === "RETIRED";
+
+  function take(s: "BANNED" | "RETIRED") {
+    startTransition(async () => {
+      const r = await takeAccountOutOfServiceAction(accountId, s);
+      setConfirm(null);
+      if (!r.ok) return setMsg(r.error);
+      const d = r.data;
+      setMsg(
+        !d.vaId
+          ? `@${username} ${s === "BANNED" ? "banned" : "retired"}.`
+          : d.replacement
+            ? `@${holder} moved to @${d.replacement}; ${NOTIFY_TEXT[d.notified ?? "failed"]}.`
+            : `@${holder} has no account now: the pool is empty. Their Lead VA can assign one once you add more.`,
+      );
+    });
+  }
+
+  if (confirm) {
+    return (
+      <span className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="text-muted-foreground">
+          {confirm === "BANNED" ? "Ban" : "Retire"} @{username}?{holder && ` @${holder} gets the next free account.`}
+        </span>
+        <Button size="sm" variant="destructive" disabled={pending} onClick={() => take(confirm)}>
+          {pending ? "…" : "Confirm"}
+        </Button>
+        <Button size="sm" variant="ghost" disabled={pending} onClick={() => setConfirm(null)}>
+          Cancel
+        </Button>
+      </span>
+    );
+  }
+  return (
+    <span className="flex flex-wrap items-center gap-1">
+      {msg && <span className="text-xs text-muted-foreground">{msg}</span>}
+      {out ? (
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={pending}
+          onClick={() =>
+            startTransition(async () => {
+              const r = await restoreAccountAction(accountId);
+              setMsg(r.ok ? `@${username} is available again.` : r.error);
+            })
+          }
+        >
+          Restore
+        </Button>
+      ) : (
+        <>
+          <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive" onClick={() => setConfirm("BANNED")}>
+            Ban
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setConfirm("RETIRED")}>
+            Retire
+          </Button>
+        </>
+      )}
+    </span>
   );
 }

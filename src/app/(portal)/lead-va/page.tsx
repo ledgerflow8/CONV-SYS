@@ -11,7 +11,7 @@ import { scopeFor } from "@/lib/scope";
 import { getSetting } from "@/lib/settings";
 import { currentPeriods, inWeek, poolHealth, qualifiedTotals, qualifiedTotalsBy } from "@/lib/stats";
 import { EMPTY_POOL_MESSAGE } from "@/lib/team";
-import { AddVaButton, VaRowActions } from "./team-controls";
+import { AddVaButton, AssignAccountButton, VaRowActions } from "./team-controls";
 
 export default async function LeadVaDashboard() {
   const user = await requireRole("LEAD_VA");
@@ -62,6 +62,13 @@ export default async function LeadVaDashboard() {
         )}
       </div>
 
+      {team.some((v) => !v.tgAccount) && (
+        <p role="status" className="mb-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100">
+          {team.filter((v) => !v.tgAccount).length} of your VAs {team.filter((v) => !v.tgAccount).length === 1 ? "has" : "have"} no Telegram
+          account. Use <strong>Assign account</strong> on their row{poolEmpty ? " once your Director adds more accounts" : ""}.
+        </p>
+      )}
+
       <Card className="mb-4">
         <CardHeader>
           <CardTitle className="text-base">My Team</CardTitle>
@@ -84,6 +91,7 @@ export default async function LeadVaDashboard() {
                   </div>
                   <VaRowActions vaId={va.id} username={va.username} joined={va.telegramUserId !== null} />
                 </div>
+                {!va.tgAccount && <AssignAccountButton vaId={va.id} username={va.username} poolEmpty={poolEmpty} />}
               </li>
             ))}
           </ul>

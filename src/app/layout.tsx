@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -13,9 +13,12 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "VA Portal",
+  title: { default: "VA Portal", template: "%s · VA Portal" },
   description: "Team and payout portal",
+  robots: { index: false, follow: false }, // private portal: keep it out of search engines
 };
+
+export const viewport: Viewport = { width: "device-width", initialScale: 1, themeColor: "#6366f1" };
 
 export default function RootLayout({
   children,

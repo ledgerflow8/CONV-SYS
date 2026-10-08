@@ -17,7 +17,7 @@ import { Label } from "@/components/ui/label";
 import { CopyButton } from "@/components/copy-button";
 import { portalUsername } from "@/lib/usernames";
 import type { Invite } from "@/lib/team";
-import { addVaAction, fireVaAction, regenerateInviteAction } from "./actions";
+import { addVaAction, assignAccountAction, fireVaAction, regenerateInviteAction } from "./actions";
 
 function InviteDialog({ invite, onClose }: { invite: Invite | null; onClose: () => void }) {
   return (
@@ -214,5 +214,32 @@ export function VaRowActions({ vaId, username, joined }: { vaId: string; usernam
       {error && <span className="w-full text-right text-xs text-destructive">{error}</span>}
       <InviteDialog invite={invite} onClose={() => setInvite(null)} />
     </div>
+  );
+}
+
+export function AssignAccountButton({ vaId, username, poolEmpty }: { vaId: string; username: string; poolEmpty: boolean }) {
+  const [pending, startTransition] = useTransition();
+  const [msg, setMsg] = useState<string | null>(null);
+  return (
+    <span className="flex flex-wrap items-center gap-2">
+      <Button
+        size="sm"
+        disabled={pending || poolEmpty}
+        aria-label={`Assign an account to ${username}`}
+        onClick={() =>
+          startTransition(async () => {
+            const r = await assignAccountAction(vaId);
+            setMsg(
+              !r.ok
+                ? r.error
+                : `Assigned @${r.data.account}${r.data.notified === "sent" ? "; they were notified on Telegram" : ". Let them know: they haven't linked Telegram yet"}.`,
+            );
+          })
+        }
+      >
+        {pending ? "Assigning…" : "Assign account"}
+      </Button>
+      {msg && <span className="text-xs text-muted-foreground">{msg}</span>}
+    </span>
   );
 }
