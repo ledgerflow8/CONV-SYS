@@ -1,13 +1,13 @@
 // Dev seed: 1 Director, 2 LMs, 4 Lead VAs, 12 VAs, 2 models, 30 TG accounts.
 // Refuses to touch a DB that already has users unless run with --reset.
 // All seed users share SEED_PASSWORD so you can log in as any role.
-import { PrismaClient, Role, TgStatus } from "@prisma/client";
+import { Role, TgStatus } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { randomBytes } from "node:crypto";
 import { ingestConvoEvent } from "../src/lib/ingest";
 import { SETTING_DEFAULTS } from "../src/lib/settings-defaults";
 
-const db = new PrismaClient();
+import { db } from "../src/lib/db"; // same client (and transaction limits) as the site
 const SEED_PASSWORD = "password123";
 const DAY = 24 * 60 * 60 * 1000;
 const ASSIGNED_SINCE = new Date(Date.now() - 14 * DAY);
