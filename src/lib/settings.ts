@@ -16,13 +16,25 @@ export async function getAllSettings(): Promise<Settings> {
   return { ...SETTING_DEFAULTS, ...stored } as Settings;
 }
 
+/** JSON with object keys sorted, so equal values compare equal however Postgres ordered them. */
+function canonical(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
+  if (v && typeof v === "object") {
+    return `{${Object.keys(v as object)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${canonical((v as Record<string, unknown>)[k])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(v);
+}
+
 /** Saves the changed keys in one transaction and audits before/after for each. */
 export async function saveSettings(actor: CurrentUser, next: Settings): Promise<Result<{ changed: SettingKey[] }>> {
   if (actor.role !== "DIRECTOR") return fail("Only the Director can change settings.");
 
   const changed = await db.$transaction(async (tx) => {
     const current = { ...SETTING_DEFAULTS, ...Object.fromEntries((await tx.setting.findMany()).map((r) => [r.key, r.value])) } as Settings;
-    const keys = (Object.keys(next) as SettingKey[]).filter((k) => JSON.stringify(current[k]) !== JSON.stringify(next[k]));
+    const keys = (Object.keys(next) as SettingKey[]).filter((k) => canonical(current[k]) !== canonical(next[k]));
     for (const key of keys) {
       const value = next[key] as Prisma.InputJsonValue;
       await tx.setting.upsert({ where: { key }, update: { value }, create: { key, value } });

@@ -68,7 +68,7 @@ TELEGRAM_BOT_TOKEN=... TELEGRAM_WEBHOOK_SECRET=<same as Vercel> APP_URL=https://
 
 - [ ] Real Director account created; seed data never touched production
 - [ ] Bot token + webhook set, `/start` tested with a real invite
-- [ ] Tier 1 list (GG/JE/IM?) and blocked domains reviewed by client
+- [x] Tier 1 list confirmed by client (incl. GG, JE, IM, DE, NO, FI, FR); [ ] blocked domains reviewed by client
 - [ ] Rates confirmed; Lead Manager rate set (or 0)
 - [ ] Timezone confirmed
 - [ ] Telegram accounts imported into pool

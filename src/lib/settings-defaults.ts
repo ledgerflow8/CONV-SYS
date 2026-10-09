@@ -11,7 +11,7 @@ export type Settings = {
 
 export const SETTING_DEFAULTS: Settings = {
   rates: { va: 25, leadVa: 10, lm: 0 },
-  tier1Countries: ["US", "CA", "GB", "AU", "NZ", "IE"],
+  tier1Countries: ["US", "CA", "GB", "AU", "NZ", "IE", "GG", "JE", "IM", "DE", "NO", "FI", "FR"],
   blockedDomains: [],
   timezone: "Etc/GMT-2", // shown as "GMT +2"
   payoutCurrency: "USDT",

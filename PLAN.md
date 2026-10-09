@@ -437,7 +437,7 @@ Payout sending is **manual for launch** (export → send from the agency's walle
 | Does an unknown/no-click source count? | Yes, unless referrer is on the blocked list |
 | Can Lead VAs mark accounts banned, or only Director? | Director only |
 | Timezone for weeks | GMT+2 |
-| Tier 1 countries | US, CA, GB, AU, NZ, IE + editable list |
+| Tier 1 countries | **Decided (client):** US, CA, GB, AU, NZ, IE, GG, JE, IM, DE, NO, FI, FR + editable list |
 | Password reset | None for users; creator/Director can regenerate. Regenerating ends all of that user's existing sessions (`User.sessionVersion`) |
 | Portal username suffixes | `<handle>_LM`, `<handle>_LVA`, `<handle>_VA` (plan only specified `_LVA`) |
 | "Report a Problem" destination | **Decided:** opens a Telegram chat with a support handle (`supportTelegram` setting). Handle TBD; item disabled until set |
