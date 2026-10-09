@@ -52,7 +52,22 @@ DATABASE_URL="<direct url>" npx tsx scripts/create-director.ts <username>
 TELEGRAM_BOT_TOKEN=... TELEGRAM_WEBHOOK_SECRET=<same as Vercel> APP_URL=https://<your-domain> npx tsx scripts/set-telegram-webhook.ts
 ```
 
-## 6. Smoke test (every role)
+## 6. CapitalAI sync (cron-job.org)
+
+CapitalAI (the AI on the Telegram accounts) doesn't send us events; we pull every 5 minutes.
+
+1. Vercel env: `CAPITALAI_LICENSE_KEY` = the client's licence key (must be an **active** licence).
+2. cron-job.org → Create cronjob:
+   - URL: `https://<your-domain>/api/cron/sync-capitalai`
+   - Schedule: every 5 minutes
+   - Request method: GET
+   - Advanced → Headers: `Authorization` = `Bearer <CRON_SECRET from Vercel>`
+   - Timeout: 60 s
+3. Check: Director → Convos → **CapitalAI sync** shows the last run (and any error, e.g. an expired licence). **Sync now** runs it on demand.
+
+The Telegram usernames in the Pool must match the `accountId` CapitalAI uses for each account (case and a leading @ are ignored). Conversations on other accounts are skipped.
+
+## 7. Smoke test (every role)
 
 - [ ] Director logs in; Settings shows GMT +2 and the rates; set the support Telegram handle
 - [ ] Director adds a model, imports Telegram accounts, creates a Lead Manager
@@ -65,6 +80,8 @@ TELEGRAM_BOT_TOKEN=... TELEGRAM_WEBHOOK_SECRET=<same as Vercel> APP_URL=https://
 - [ ] Director → Payouts → Lock (after a week ends) → Export CSV
 
 ## Launch checklist (PLAN.md §8)
+
+- [ ] CapitalAI licence active; cron-job.org job created; Convos page shows a successful sync
 
 - [ ] Real Director account created; seed data never touched production
 - [ ] Bot token + webhook set, `/start` tested with a real invite

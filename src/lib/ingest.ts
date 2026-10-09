@@ -62,7 +62,7 @@ export type IngestOutcome = {
   late: boolean; // qualified into the current week because its own week was locked
 };
 
-type Via = "api" | "csv" | "retry" | "review";
+type Via = "api" | "csv" | "retry" | "review" | "capitalai";
 
 export function formatEventError(error: z.ZodError): string {
   return error.issues.map((i) => `${i.path.join(".") || "event"} ${i.message}`).join("; ");

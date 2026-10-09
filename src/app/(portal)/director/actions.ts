@@ -12,6 +12,9 @@ import { retryConvo, reviewConvo, type IngestOutcome } from "@/lib/ingest";
 import { lockFinishedWeeks, lockWeek, markPayoutFailed, markPayoutPaid, refreshPayoutWallet, type LockSummary } from "@/lib/payouts";
 import { createResource, deleteResource, prepareUpload } from "@/lib/resources";
 import { restoreAccount, takeAccountOutOfService, type TakeOutcome } from "@/lib/reassign";
+import { syncCapitalAI } from "@/lib/capitalai-sync";
+import { audit } from "@/lib/audit";
+import { db } from "@/lib/db";
 import { saveSettings } from "@/lib/settings";
 import { parseSettingsForm, type SettingsFormErrors } from "@/lib/settings-form";
 
@@ -242,4 +245,21 @@ export async function restoreAccountAction(accountId: unknown): Promise<Result<n
   const result = await restoreAccount(actor, parsed.data);
   revalidatePath("/", "layout");
   return result;
+}
+
+// ── CapitalAI sync ────────────────────────────────────────────────────────
+
+export async function syncCapitalAINowAction(): Promise<{ ok: boolean; message: string }> {
+  const actor = await requireRole("DIRECTOR");
+  await db.$transaction((tx) => audit(tx, { actorId: actor.id, action: "capitalai.sync_manual" }));
+  const r = await syncCapitalAI({ budgetMs: 45_000 });
+  revalidatePath("/director/convos");
+  revalidatePath("/director");
+  if (!r.ok) return { ok: false, message: r.error };
+  const s = r.summary;
+  const changed = Object.values(s.byStatus).reduce((n, x) => n + (x ?? 0), 0);
+  return {
+    ok: true,
+    message: `Checked ${s.listed} conversations (${s.ours} on our accounts): ${changed} new or updated, ${s.errors.length} errors${s.complete ? "" : ", more on the next run"}.`,
+  };
 }

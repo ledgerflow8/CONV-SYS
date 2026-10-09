@@ -15,7 +15,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { ConvoImportSummary } from "@/lib/convo-import";
-import { importConvosAction, retryConvoAction, reviewConvoAction } from "../actions";
+import { importConvosAction, retryConvoAction, reviewConvoAction, syncCapitalAINowAction } from "../actions";
 
 export function ReviewActions({ convoId, canApprove }: { convoId: string; canApprove: boolean }) {
   const [pending, startTransition] = useTransition();
@@ -158,5 +158,28 @@ export function ImportConvosDialog() {
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+export function SyncNowButton() {
+  const [pending, startTransition] = useTransition();
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={pending}
+        onClick={() =>
+          startTransition(async () => {
+            const r = await syncCapitalAINowAction();
+            setMsg({ ok: r.ok, text: r.message });
+          })
+        }
+      >
+        {pending ? "Syncing…" : "Sync now"}
+      </Button>
+      {msg && <span className={msg.ok ? "text-xs text-muted-foreground" : "text-xs text-destructive"}>{msg.text}</span>}
+    </div>
   );
 }

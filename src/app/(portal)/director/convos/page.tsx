@@ -9,7 +9,8 @@ import { scopeFor } from "@/lib/scope";
 import { getSetting } from "@/lib/settings";
 import { formatDateTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
-import { ImportConvosDialog, ReviewActions } from "./convo-controls";
+import { getSyncState } from "@/lib/capitalai-sync";
+import { ImportConvosDialog, ReviewActions, SyncNowButton } from "./convo-controls";
 
 const STATUSES: ConvoStatus[] = ["QUALIFIED", "PENDING", "REVIEW", "REJECTED"];
 const LIST_LIMIT = 100;
@@ -44,7 +45,8 @@ export default async function ConvosPage({ searchParams }: { searchParams: Promi
   const sp = await searchParams;
   const status = STATUSES.find((s) => s === sp.status);
   const q = sp.q?.trim().replace(/^@/, "").slice(0, 64);
-  const tz = await getSetting("timezone");
+  const [tz, sync] = await Promise.all([getSetting("timezone"), getSyncState()]);
+  const syncConfigured = !!process.env.CAPITALAI_LICENSE_KEY;
 
   const listWhere: Prisma.ConvoWhereInput = {
     AND: [
@@ -81,9 +83,32 @@ export default async function ConvosPage({ searchParams }: { searchParams: Promi
     <>
       <TopBar title="Convos" emoji="💬" />
 
-      <div className="mb-4">
-        <ImportConvosDialog />
-      </div>
+      <Card className="mb-4">
+        <CardHeader>
+          <CardTitle className="text-base">CapitalAI sync</CardTitle>
+          <CardDescription>
+            {syncConfigured
+              ? "New conversations from the AI are pulled in automatically every few minutes."
+              : "Not connected: CAPITALAI_LICENSE_KEY isn't set."}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2 text-sm">
+          {sync.lastRun ? (
+            <p className={sync.lastRun.ok ? "text-muted-foreground" : "text-destructive"}>
+              Last run {formatDateTime(new Date(sync.lastRun.at), tz)}:{" "}
+              {sync.lastRun.ok && sync.lastRun.summary
+                ? `${sync.lastRun.summary.ours} conversations on our accounts, ${Object.values(sync.lastRun.summary.byStatus).reduce((n, x) => n + (x ?? 0), 0)} new or updated, ${sync.lastRun.summary.errors.length} errors.`
+                : `failed: ${sync.lastRun.error}`}
+            </p>
+          ) : (
+            <p className="text-muted-foreground">Hasn&apos;t run yet.</p>
+          )}
+          {syncConfigured && <SyncNowButton />}
+          <div className="pt-1">
+            <ImportConvosDialog />
+          </div>
+        </CardContent>
+      </Card>
 
       <Card className="mb-6">
         <CardHeader>

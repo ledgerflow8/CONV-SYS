@@ -431,7 +431,7 @@ Payout sending is **manual for launch** (export → send from the agency's walle
 |---|---|
 | Payout currency: USDT or USDC, which chain | Setting; label only, sending is manual |
 | Lead Manager rate | $0.00 setting |
-| Client's AI API — format, auth, whether it reports replies/phone | Integrate via `/api/ingest/convo`; adapter once docs arrive |
+| Client's AI API — format, auth, whether it reports replies/phone | **Decided:** CapitalAI (capitalbot.ai). It doesn't push, so `/api/cron/sync-capitalai` pulls `POST /api/dashboard/search` + `/api/conversation` every 5 min (cron-job.org) and feeds `ingestConvoEvent`. Only conversations whose `accountId` matches a pool username are used. `firstMsgAt` = fan's first message, `repliedAt` = account's first message after it. No phone from CapitalAI → country from tracking-link clicks. Licence key: `CAPITALAI_LICENSE_KEY` |
 | Does one person count once per account ever, or once per week? | Once per account, ever |
 | Unknown-country convos | Go to Director review queue |
 | Does an unknown/no-click source count? | Yes, unless referrer is on the blocked list |
