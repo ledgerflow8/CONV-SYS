@@ -12,6 +12,7 @@ const fake: FileStorage = {
   createUploadUrl: async (path) => ({ signedUrl: `https://fake/upload/${path}?token=t` }),
   exists: async (path) => files.has(path),
   downloadUrl: async (path, { filename }) => `https://fake/get/${path}${filename ? `?download=${filename}` : ""}`,
+  listAll: async () => [...files],
   remove: async (paths) => {
     for (const p of paths) {
       files.delete(p);
