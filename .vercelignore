@@ -1,0 +1,2 @@
+# The Telegram panel deploys separately to a VPS; never upload it to Vercel.
+telegram-panel/
