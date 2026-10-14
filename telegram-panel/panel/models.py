@@ -69,6 +69,8 @@ class Account(Base):
     first_name: Mapped[str | None] = mapped_column(String(128))
 
     session_enc: Mapped[bytes] = mapped_column(LargeBinary)
+    # sha256 of the auth key: a re-uploaded session is spotted without opening a second connection
+    auth_key_sha256: Mapped[str] = mapped_column(String(64), unique=True)
     api_id: Mapped[int] = mapped_column(Integer)
     api_hash: Mapped[str] = mapped_column(String(64))
     device_model: Mapped[str | None] = mapped_column(String(128))

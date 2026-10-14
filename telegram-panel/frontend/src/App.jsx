@@ -4,6 +4,7 @@ import { navigate, usePath } from "./router.js";
 import Drawer from "./components/Drawer.jsx";
 import Login from "./pages/Login.jsx";
 import Accounts from "./pages/Accounts.jsx";
+import Add from "./pages/Add.jsx";
 import Placeholder from "./pages/Placeholder.jsx";
 
 export const NAV = [
@@ -15,7 +16,7 @@ export const NAV = [
 
 const PAGES = {
   "/accounts": () => <Accounts />,
-  "/add": () => <Placeholder title="Add accounts" note="Session upload arrives in step 1, phone login in step 4." />,
+  "/add": () => <Add />,
   "/personas": () => <Placeholder title="Personas" note="Capitalbot personas arrive in step 3." />,
   "/status": () => <Placeholder title="Status" note="Portal sync and AI status arrive in steps 2–3." />,
 };

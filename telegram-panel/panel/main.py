@@ -10,12 +10,17 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from panel.accounts import AccountManager
 from panel.auth import LoginLimiter, Signer
 from panel.config import Settings, get_settings
 from panel.crypto import Crypto
 from panel.db import init_db, make_engine, make_sessionmaker
 from panel.lock import InstanceLock
+from panel.routes import accounts as account_routes
 from panel.routes import auth as auth_routes
+from panel.routes import imports as import_routes
+from panel.service import Service
+from panel.tg.client import ClientFactory, telethon_factory
 
 DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
@@ -25,7 +30,7 @@ CSP = (
 )
 
 
-def create_app(settings: Settings | None = None, dist: Path = DIST) -> FastAPI:
+def create_app(settings: Settings | None = None, dist: Path = DIST, client_factory: ClientFactory | None = None) -> FastAPI:
     settings = settings or get_settings()
 
     @asynccontextmanager
@@ -35,8 +40,26 @@ def create_app(settings: Settings | None = None, dist: Path = DIST) -> FastAPI:
         engine = make_engine(settings.db_path)
         try:
             await init_db(engine)
-            app.state.sessionmaker = make_sessionmaker(engine)
-            yield
+            sessionmaker = make_sessionmaker(engine)
+            app.state.sessionmaker = sessionmaker
+            manager = AccountManager(client_factory or telethon_factory)
+            app.state.manager = manager
+            app.state.service = Service(
+                sessionmaker,
+                app.state.crypto,
+                manager,
+                settings.data_dir,
+                settings.tg_api_id,
+                settings.tg_api_hash,
+            )
+            app.state.background = set()
+            await app.state.service.connect_powered_on()
+            try:
+                yield
+            finally:
+                await manager.shutdown()  # disconnect every client; never log out
+                for task in list(app.state.background):
+                    task.cancel()
         finally:
             await engine.dispose()
             lock.release()
@@ -63,10 +86,13 @@ def create_app(settings: Settings | None = None, dist: Path = DIST) -> FastAPI:
         return response
 
     app.include_router(auth_routes.router)
+    app.include_router(account_routes.router)
+    app.include_router(import_routes.router)
 
     @app.get("/healthz")
-    async def healthz() -> dict:
-        return {"ok": True, "accounts_online": 0}
+    async def healthz(request: Request) -> dict:
+        manager = getattr(request.app.state, "manager", None)
+        return {"ok": True, "accounts_online": manager.online_count if manager else 0}
 
     @app.api_route("/api/{rest:path}", methods=["GET", "POST", "PATCH", "PUT", "DELETE"], include_in_schema=False)
     async def api_not_found(rest: str) -> JSONResponse:

@@ -13,6 +13,9 @@ H = {"X-Panel": "1"}
 
 
 def make_settings(tmp_path: Path, **kw) -> Settings:
+    # A panel Telegram app is set by default (as on the VPS). Pass tg_api_id=None to drop it.
+    kw.setdefault("tg_api_id", 999999)
+    kw.setdefault("tg_api_hash", "f" * 32)
     return Settings(
         panel_enc_key=generate_key(),
         panel_secret="s" * 40,
@@ -33,6 +36,10 @@ def client(settings: Settings, tmp_path: Path):
     app = create_app(settings, dist=tmp_path / "no-dist")
     with TestClient(app, base_url="https://panel.example.com") as c:
         yield c
+
+
+def speed_up_imports(client: TestClient) -> None:
+    client.app.state.service.import_gap_seconds = 0
 
 
 def set_password(client: TestClient, password: str = PASSWORD) -> None:

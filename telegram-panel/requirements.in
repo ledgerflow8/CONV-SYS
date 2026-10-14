@@ -6,3 +6,5 @@ pydantic-settings
 cryptography
 argon2-cffi
 itsdangerous
+telethon
+python-multipart
