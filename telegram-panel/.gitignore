@@ -20,3 +20,6 @@ __pycache__/
 # Frontend
 frontend/node_modules/
 frontend/dist/
+
+# Capitalbot's API docs: keep local only
+CapitalAI_Docs.md
