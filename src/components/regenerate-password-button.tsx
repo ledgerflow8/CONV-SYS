@@ -51,7 +51,7 @@ export function RegeneratePasswordButton({
       {error && <span className="text-xs text-destructive">{error}</span>}
       <CredentialsDialog
         credentials={credentials}
-        title={`New password for @${username}`}
+        title={`New password for ${username}`}
         onDone={() => setCredentials(null)}
       />
     </>

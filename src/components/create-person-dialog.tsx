@@ -104,7 +104,7 @@ export function CreatePersonDialog({ role, roleLabel, models, whatHappensNext, c
                 aria-describedby="handle-hint"
               />
               <p id="handle-hint" className={handleError ? "text-sm text-destructive" : "text-sm text-muted-foreground"}>
-                {handleError ?? (preview ? `Portal username: @${preview}` : "Min 5 characters.")}
+                {handleError ?? (preview ? `Login username: ${preview}` : "Min 5 characters.")}
               </p>
             </div>
 

@@ -27,11 +27,11 @@ function InviteDialog({ invite, onClose }: { invite: Invite | null; onClose: () 
           <DialogTitle>Send this to your VA</DialogTitle>
           {invite?.rehired && (
             <p className="text-sm font-medium">
-              @{invite.username} worked here before, so their old login was re-activated on your team.
+              {invite.username} worked here before, so their old login was re-activated on your team.
             </p>
           )}
           <DialogDescription>
-            When @{invite?.username} opens it, the bot sends them their login, Telegram account and tracking link. It
+            When {invite?.username} opens it, the bot sends them their login, Telegram account and tracking link. It
             works once and expires {invite && formatExpiry(invite.expiresAt)}.
           </DialogDescription>
         </DialogHeader>
@@ -122,7 +122,7 @@ export function AddVaButton({ poolEmpty }: { poolEmpty: boolean }) {
                 aria-describedby="va-handle-hint"
               />
               <p id="va-handle-hint" className={hint ? "text-sm text-destructive" : "text-sm text-muted-foreground"}>
-                {hint ?? (preview ? `Portal username: @${preview}` : "Min 5 characters.")}
+                {hint ?? (preview ? `Login username: ${preview}` : "Min 5 characters.")}
               </p>
             </div>
             {error && (
