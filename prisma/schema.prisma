@@ -116,6 +116,9 @@ model TgAccount {
   va         User?    @relation(fields: [vaId], references: [id])
   sessionRef String? // later: encrypted session for reply detection
   notes      String?
+  // Reported by the Telegram panel (record-only; never changes status or assignments).
+  panelStatus String? // online · offline · limited · banned · revoked
+  lastSeenAt  DateTime? // when the panel last reported on this account
   createdAt  DateTime @default(now())
 
   assignments TgAssignment[]

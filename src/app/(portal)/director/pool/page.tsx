@@ -50,6 +50,8 @@ export default async function PoolPage({
         phone: true,
         link: true,
         status: true,
+        panelStatus: true,
+        lastSeenAt: true,
         model: { select: { name: true } },
         va: { select: { username: true } },
         assignments: {
@@ -158,6 +160,21 @@ export default async function PoolPage({
                     {a.model.name} · {a.phone}
                     {a.va && ` · held by @${a.va.username}`}
                   </p>
+                  {a.panelStatus && (
+                    <p
+                      className={cn(
+                        "text-xs",
+                        ["banned", "revoked"].includes(a.panelStatus)
+                          ? "text-destructive"
+                          : a.panelStatus === "limited"
+                            ? "text-amber-600"
+                            : "text-muted-foreground",
+                      )}
+                    >
+                      panel: {a.panelStatus}
+                      {a.lastSeenAt && ` · ${formatDateTime(a.lastSeenAt, tz)}`}
+                    </p>
+                  )}
                 </div>
                 <StatusBadge status={a.status} />
               </div>
