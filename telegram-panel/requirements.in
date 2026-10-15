@@ -3,6 +3,7 @@ uvicorn[standard]
 sqlalchemy[asyncio]>=2
 aiosqlite
 pydantic-settings
+httpx
 cryptography
 argon2-cffi
 itsdangerous

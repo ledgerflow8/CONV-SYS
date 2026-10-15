@@ -2,7 +2,7 @@
 
 ## 1. Scope
 
-One service on an Ubuntu VPS that:
+One service on Render (a single Web Service with a persistent disk) that:
 
 1. **Holds the client's Telegram accounts.** Each account has one live connection, which the client can switch on or off from a phone.
 2. **Adds accounts** by uploading `.session` files (alone, paired with `.json` files, or in a `.zip`) or by phone login.
@@ -15,7 +15,7 @@ Out of scope for v1: openers (starting chats), group chats, a manual chat UI (th
 ## 2. Architecture
 
 ```
- phone browser ──HTTPS──► Caddy (TLS) ──► uvicorn :8080 (1 worker, 127.0.0.1)
+ phone browser ──HTTPS──► Render (TLS, panel.fansflow.eu) ──► uvicorn :$PORT (1 instance, 1 worker)
                                            │
                                            ├─ FastAPI: /api/*  + static frontend/dist
                                            ├─ AccountManager: one TelegramClient per powered-on account
@@ -24,7 +24,7 @@ Out of scope for v1: openers (starting chats), group chats, a manual chat UI (th
                                            ├─ Outbox worker: signed batches → portal /api/ingest/convo
                                            └─ Health loop: status checks, "gone quiet", avatar refresh
                                            │
-                                     SQLite (WAL) /var/lib/tgpanel/panel.db
+                                     SQLite (WAL) on the persistent disk ($DATA_DIR/panel.db)
 ```
 
 - **One process, one event loop.** Telethon clients, the workers and FastAPI share the loop. A `fcntl` lock on `data/panel.lock` stops a second process from starting, so two processes can never hold the same session (Telegram kills sessions used from two places with `AuthKeyDuplicatedError`).
@@ -53,7 +53,6 @@ telegram-panel/
     __main__.py        CLI: set-password, gen-key
   frontend/            Vite + React (JSX)
   tests/
-  deploy/              tgpanel.service, Caddyfile, backup.sh
   .env.example  .gitignore  requirements.txt  PLAN.md  CLAUDE.md
 ```
 
@@ -203,7 +202,7 @@ Derivation matches the portal's `toConvoEvent`. **firstMsgAt** is the fan's firs
    - `200`: each row maps to `results[index]`. `ok:true` → `sent`; `ok:false` → `failed` with the error. This is a validation problem that a retry won't fix.
    - Network error, `5xx` or `413`: back off exponentially from 10s up to a 30-minute cap, and keep trying forever. A `413` halves the batch.
    - `401`/`503`: back off and show an alert on Status, since the config is wrong.
-3. Its clock must be within ±5 minutes of the portal's, so the VPS runs `systemd-timesyncd`.
+3. Its clock must be within ±5 minutes of the portal's; Render's hosts are NTP-synced, so no action is needed.
 
 **Account status** (`kind=account_status`) is enqueued on every status change: `{tgAccount, status: online|offline|limited|banned|revoked, at, detail?}`. It goes to the new portal route `POST /api/ingest/account-status` (approved; built in step 2), which uses the same auth as convo ingest.
 
@@ -277,17 +276,19 @@ TG_API_ID= TG_API_HASH=   # panel's own app (my.telegram.org), for phone login /
 CAPITAL_LICENSE_KEY=
 PORTAL_INGEST_URL=https://fansflow.eu/api/ingest/convo
 PORTAL_INGEST_API_KEY= PORTAL_INGEST_HMAC_SECRET=
-DATA_DIR=/var/lib/tgpanel
-PUBLIC_ORIGIN=https://panel.<domain>
+DATA_DIR=/var/data            # the Render persistent disk mount
+PUBLIC_ORIGIN=https://panel.fansflow.eu
 ```
 
-## 8. Deploy (Ubuntu VPS)
+## 8. Deploy (Render)
 
-- **Install:** an `apt` step installs `python3.12-venv ffmpeg caddy sqlite3`. The code goes in `/opt/tgpanel` with a venv in `/opt/tgpanel/.venv`. A system user `tgpanel` owns `/var/lib/tgpanel` (mode 700). The env file is `/etc/tgpanel/env` (mode 600).
-- **`deploy/tgpanel.service`:** runs `uvicorn --factory panel.main:create_app --host 127.0.0.1 --port 8080 --workers 1 --proxy-headers` with `Restart=always`, `EnvironmentFile=/etc/tgpanel/env` and `TimeoutStopSec=30`. Hardening: `NoNewPrivileges`, `ProtectSystem=strict`, `ReadWritePaths=/var/lib/tgpanel`. On SIGTERM the service disconnects every client without logging out.
-- **Caddy:** a subdomain with automatic TLS that reverse-proxies to `:8080`.
-- **Updates:** `git pull` → `npm ci && npm run build` in `frontend/` → `pip install -r requirements.txt` → `systemctl restart tgpanel`.
-- **Backups:** a nightly `sqlite3 .backup` to `/var/backups/tgpanel`, keeping 14 days. Sessions in the backup stay encrypted, and `PANEL_ENC_KEY` is kept separately (it isn't in the backup).
+Full click-by-click steps are in `DEPLOY.md`. In short:
+
+- **One Web Service, Starter plan**, built from this repo with Root Directory `telegram-panel`. Build: `pip install -r requirements.txt && npm --prefix frontend ci && npm --prefix frontend run build`. Start: `uvicorn --factory panel.main:create_app --host 0.0.0.0 --port $PORT --workers 1`.
+- **Single instance, enforced.** A persistent disk (mounted at `/var/data`, `DATA_DIR=/var/data`) holds the sessions, SQLite and lock file. Render attaches a disk to only one instance and deploys stop-the-old-before-starting-the-new, so the one-connection-per-account rule and the `fcntl` lock hold. Manual scaling, 1 instance, no autoscaling.
+- **HTTPS + domain:** Render terminates TLS for `panel.fansflow.eu` (CNAME to the service). No reverse proxy of our own.
+- **Secrets** are the service's environment variables; the panel password is set once via the Render Shell (`python -m panel set-password`).
+- **Updates:** push to the branch → Render redeploys. **Backups:** enable the disk's scheduled snapshots; `PANEL_ENC_KEY` is kept outside them.
 
 ### Repo hygiene (in step 0)
 - `telegram-panel/.gitignore`: `.env`, `.venv/`, `data/`, `*.session`, `*.session-journal`, `*.zip`, `*.db`, `*.sqlite*`, `__pycache__/`, `frontend/node_modules/`, `frontend/dist/`.
@@ -295,11 +296,11 @@ PUBLIC_ORIGIN=https://panel.<domain>
 
 ## 9. Build order
 
-Ship vertical slices, and test each one on the VPS with one real account before moving on.
+Ship vertical slices, and test each one on the deployed Render panel with one real account before moving on.
 
-0. ✅ **Skeleton** (2026-10-14): `.gitignore`, the portal excludes, the FastAPI app with lifespan + lock file, SQLite models, crypto, the CLI (`gen-key`, `set-password`), panel login, Vite shell with drawer + login screen, systemd unit + Caddyfile. *Done when:* it's deployed and you can log in from a phone.
+0. ✅ **Skeleton** (2026-10-14): `.gitignore`, the portal excludes, the FastAPI app with lifespan + lock file, SQLite models, crypto, the CLI (`gen-key`, `set-password`), panel login, Vite shell with drawer + login screen, and the deploy runbook (now Render; the original VPS unit/Caddyfile were dropped when we moved to Render). *Done when:* it's deployed and you can log in from a phone.
 1. ✅ **Session import + account list** (2026-10-14): session parsing (Telethon + Pyrogram), JSON mapping, the import job, AccountManager (one connection per account, connect/disconnect/log-out, startup reconnect, drop watcher), the Accounts screen with search, refresh, health colours, power + AI toggles, the detail sheet, avatars and delete. Duplicates are caught by the auth-key sha256 before any second connection. *Done:* covered by `tests/test_accounts_api.py` against a fake Telegram; browser-checked. *Not yet:* incoming-message activity (so cards sit amber until step 2 wires the listener).
-2. **Portal sync:** event derivation on incoming and outgoing messages, the outbox, signing, the Status screen's portal panel. **Portal side:** `POST /api/ingest/account-status` (same auth as convo ingest) sets `BANNED` on banned/revoked and records the panel's last-known status. A pytest checks the signature against a vector made with the portal's `signIngestBody`. *Done when:* a real DM to a panel account shows up in the portal's Convos as PENDING, then QUALIFIED or REVIEW after a reply.
+2. ✅ **Portal sync** (2026-10-16): the Telethon message listener (incoming + outgoing), message/chat storage, convo event derivation (`first` + `reply`), the outbox worker (signed batches, backoff, 413 halving, 401/503 alert), account-status events on every status change, and the Status screen's portal panel (queue counts, failed rows, retry, activity). `tests/test_portal.py` checks the signature against the portal's `signIngestBody` vector; `tests/test_events.py` covers derivation end-to-end on a fake Telegram. **Portal side:** `POST /api/ingest/account-status` (same auth as convo ingest) — **record-only** (§10.1): it stores `panelStatus`/`lastSeenAt` and never changes `TgStatus` or assignments. *Done when:* a real DM to a panel account shows up in the portal's Convos as PENDING, then QUALIFIED or REVIEW after a reply.
 3. **Capitalbot AI:** catalog, personas, chat toggle, debounce, the chatHistory builder, response handling for every flag, sending media (ffmpeg voice), fan media upload. *Done when:* a test fan has a full conversation, including a photo both ways, and every flag path is covered in tests.
 4. **Phone login.**
 5. **Health loop + polish:** quiet/limited/banned detection, reconnect backoff, activity log, global settings, backups.
@@ -319,13 +320,13 @@ Ship vertical slices, and test each one on the VPS with one real account before 
 
 All settled on 2026-10-14. Nothing is waiting on the client or Capitalbot. ✅ marks the client's own calls. The rest are the safest option, chosen by us.
 
-1. ✅ **Account status → portal:** a new portal route `POST /api/ingest/account-status` with the same auth as convo ingest. It sets `BANNED` on `banned`/`revoked` and records online/offline in a new `lastSeenAt`/`panelStatus` field. Built in step 2.
+1. ✅ **Account status → portal:** a new portal route `POST /api/ingest/account-status` with the same auth as convo ingest. **Record-only** (settled 2026-10-16): it stores online/offline/limited/banned/revoked in new `panelStatus`/`lastSeenAt` fields and surfaces them in the Director's pool, but never changes `TgStatus` or VA assignments and never notifies — a real ban stays a human action through the existing UI, so an automated beacon can't churn assignments or spam VAs. Built in step 2.
 2. ✅ **Portal Pool:** the client adds accounts in the portal by hand, under the same username. If ingest replies `unknown_account`, the panel shows a "not in portal" hint on the card.
 3. **Portal CapitalAI cron sync:** left as it is. Panel calls use the numeric Telegram id as `accountId` (§11.1), and that sync matches on username. So it skips panel accounts as "not ours" and can't double-count them. The panel is the only reporter for its accounts. The cron can be switched off later without any code change.
 4. **Follow-ups:** off. Only a fan message triggers a reply, so the panel never sends anything unprompted. Turning them on would be a new decision.
 5. **Quiet threshold:** 12h with no incoming message.
 6. **Backfill on add:** off. Only chats with activity after an account is added get reported.
-7. **Proxies:** connect direct from the VPS IP. A proxy in an uploaded `.json` is stored encrypted but not used. Imports test sessions one at a time with a 2s gap, to avoid a burst of logins from one IP.
+7. **Proxies:** connect direct from Render's IP. A proxy in an uploaded `.json` is stored encrypted but not used. Imports test sessions one at a time with a 2s gap, to avoid a burst of logins from one IP.
 8. **Account count:** built for up to about 200 accounts in one process.
 9. ✅ **Sole connection:** the panel is the only Telegram connection. Capitalbot is used through its API only, never through its own Telegram connector.
 10. **Panel domain:** `panel.fansflow.eu`.

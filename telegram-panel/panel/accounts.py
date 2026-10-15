@@ -35,22 +35,26 @@ class AccountManager:
         client = self._factory(params)
         return await client.start(), client
 
-    async def adopt(self, account_id: int, client: TgClient, on_drop) -> None:
+    async def adopt(self, account_id: int, client: TgClient, on_drop, on_message=None) -> None:
         """Keep an already-connected client as this account's live connection."""
         async with self._lock(account_id):
             if account_id in self._clients:
                 # Already connected (e.g. a racing import): drop the newcomer, keep the holder.
                 await client.disconnect()
                 return
+            if on_message is not None:
+                client.on_private_message(on_message)
             self._clients[account_id] = client
             self._watchers[account_id] = asyncio.create_task(self._watch(account_id, client, on_drop))
 
-    async def connect(self, account_id: int, params: ConnectParams, on_drop) -> AccountInfo:
+    async def connect(self, account_id: int, params: ConnectParams, on_drop, on_message=None) -> AccountInfo:
         async with self._lock(account_id):
             if account_id in self._clients:
                 raise TgError("error", "Account is already connected")
             client = self._factory(params)
             info = await client.start()  # raises TgError; nothing is stored on failure
+            if on_message is not None:
+                client.on_private_message(on_message)
             self._clients[account_id] = client
             self._watchers[account_id] = asyncio.create_task(self._watch(account_id, client, on_drop))
             return info

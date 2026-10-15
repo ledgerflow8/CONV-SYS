@@ -5,6 +5,7 @@ import Drawer from "./components/Drawer.jsx";
 import Login from "./pages/Login.jsx";
 import Accounts from "./pages/Accounts.jsx";
 import Add from "./pages/Add.jsx";
+import Status from "./pages/Status.jsx";
 import Placeholder from "./pages/Placeholder.jsx";
 
 export const NAV = [
@@ -18,7 +19,7 @@ const PAGES = {
   "/accounts": () => <Accounts />,
   "/add": () => <Add />,
   "/personas": () => <Placeholder title="Personas" note="Capitalbot personas arrive in step 3." />,
-  "/status": () => <Placeholder title="Status" note="Portal sync and AI status arrive in steps 2–3." />,
+  "/status": () => <Status />,
 };
 
 export default function App() {

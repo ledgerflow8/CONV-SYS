@@ -6,7 +6,7 @@ Read `PLAN.md` (this folder) before doing anything. It is the source of truth fo
 A standalone panel that holds the client's Telegram accounts: it connects each account, lets Capitalbot AI chat on it, and reports convos to the VA portal (the Next.js site one folder up). It deploys on its own to an Ubuntu VPS and never imports code from the portal.
 
 ## Stack
-Python 3.12, FastAPI + Telethon in one asyncio process, SQLite (WAL) through SQLAlchemy 2 (async), React + Vite frontend (plain JSX) built to `frontend/dist` and served by FastAPI. pytest. systemd + Caddy on the VPS.
+Python 3.12, FastAPI + Telethon in one asyncio process, SQLite (WAL) through SQLAlchemy 2 (async), React + Vite frontend (plain JSX) built to `frontend/dist` and served by FastAPI. pytest. Deployed as one Render Web Service (single instance, persistent disk).
 
 ## Rules
 - **One Telegram connection per account, held by this panel.** Exactly one process (uvicorn `--workers 1`, plus the `data/panel.lock` lock file at startup) and one `TelegramClient` per account. Uploading a session that's already in the panel never opens a second client for it.

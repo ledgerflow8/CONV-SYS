@@ -23,3 +23,6 @@ frontend/dist/
 
 # Capitalbot's API docs: keep local only
 CapitalAI_Docs.md
+
+# Dropped Telegram account exports (sessions + .json metadata) — never commit
+TGX_Account_*/

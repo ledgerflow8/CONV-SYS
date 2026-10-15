@@ -128,9 +128,10 @@ async def _process_one(service: Service, item_id: int, cand: Candidate) -> None:
         acc = await _save_working(service, session, parsed, meta, info, client)
         account_id, username, phone = acc.id, acc.username, acc.phone
         item.result, item.username, item.phone = "connected", username, phone
+        await service._enqueue_status(session, acc)  # report the fresh account as online
         await session.commit()
 
-    await service.manager.adopt(account_id, client, service.on_drop())
+    await service.manager.adopt(account_id, client, service.on_drop(), service.message_cb(account_id))
     asyncio.create_task(service.refresh_avatar(account_id))
 
 

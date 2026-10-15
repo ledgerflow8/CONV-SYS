@@ -40,7 +40,9 @@ httpcore==1.0.9
 httptools==0.9.0
     # via uvicorn
 httpx==0.28.1
-    # via -r requirements-dev.in
+    # via
+    #   -r requirements.in
+    #   -r requirements-dev.in
 idna==3.20
     # via
     #   anyio

@@ -3,6 +3,7 @@
 Run with exactly one worker: uvicorn --factory panel.main:create_app --workers 1
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -16,9 +17,11 @@ from panel.config import Settings, get_settings
 from panel.crypto import Crypto
 from panel.db import init_db, make_engine, make_sessionmaker
 from panel.lock import InstanceLock
+from panel.portal import OutboxWorker, PortalConfig
 from panel.routes import accounts as account_routes
 from panel.routes import auth as auth_routes
 from panel.routes import imports as import_routes
+from panel.routes import system as system_routes
 from panel.service import Service
 from panel.tg.client import ClientFactory, telethon_factory
 
@@ -53,7 +56,12 @@ def create_app(settings: Settings | None = None, dist: Path = DIST, client_facto
                 settings.tg_api_hash,
             )
             app.state.background = set()
+            # Outbox worker: signs and ships portal events. Idle until PORTAL_INGEST_* are set.
+            portal_config = PortalConfig(settings.portal_ingest_url, settings.portal_ingest_api_key, settings.portal_ingest_hmac_secret)
+            worker = OutboxWorker(sessionmaker, portal_config)
+            app.state.outbox = worker
             await app.state.service.connect_powered_on()
+            app.state.background.add(asyncio.create_task(worker.run()))
             try:
                 yield
             finally:
@@ -88,6 +96,7 @@ def create_app(settings: Settings | None = None, dist: Path = DIST, client_facto
     app.include_router(auth_routes.router)
     app.include_router(account_routes.router)
     app.include_router(import_routes.router)
+    app.include_router(system_routes.router)
 
     @app.get("/healthz")
     async def healthz(request: Request) -> dict:

@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from panel.tg.client import AccountInfo, ConnectParams, TgError
+from panel.tg.client import AccountInfo, ConnectParams, IncomingMessage, TgError
 
 
 @dataclass
@@ -19,6 +19,8 @@ class FakeAccount:
     has_avatar: bool = True
     last_msg_at: datetime | None = None
     last_incoming_at: datetime | None = None
+    # (first_in, first_reply) a dialog_firsts() lookup returns, keyed by peer id string.
+    dialog_firsts: dict[str, tuple[datetime | None, datetime | None]] = field(default_factory=dict)
 
 
 class FakeClient:
@@ -54,6 +56,11 @@ class FakeClient:
     async def last_activity(self):
         return (self._fake.last_msg_at, self._fake.last_incoming_at) if self._fake else (None, None)
 
+    async def dialog_firsts(self, peer_id: int):
+        if self._fake:
+            return self._fake.dialog_firsts.get(str(peer_id), (None, None))
+        return (None, None)
+
     async def wait_disconnected(self):
         await self._disconnected
         return None
@@ -63,6 +70,10 @@ class FakeClient:
 
     def on_private_message(self, cb) -> None:
         self._cb = cb
+
+    async def deliver(self, msg: IncomingMessage) -> None:
+        """Test helper: push a message as if Telegram delivered it to this account."""
+        await self._cb(msg)
 
 
 class FakeDirectory:

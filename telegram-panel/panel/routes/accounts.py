@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -10,6 +12,8 @@ from panel.models import Account
 from panel.tg.client import TgError
 
 router = APIRouter(prefix="/api/accounts", dependencies=[Depends(require_login)])
+
+log = logging.getLogger("panel.routes.accounts")
 
 DEFAULT_QUIET_HOURS = 12
 
@@ -91,9 +95,22 @@ async def set_power(account_id: int, body: PowerBody, request: Request) -> dict:
         acc.power_on = body.on
 
     if body.on:
+        # Already live: power-on is a no-op. Never call connect() for a connected account — that
+        # would trip the "already connected" guard and wrongly flag a healthy account as dead.
+        if service.manager.is_connected(account_id):
+            return {"ok": True, "already_connected": True}
         try:
-            info = await service.manager.connect(account_id, params, service.on_drop())
+            info = await service.manager.connect(account_id, params, service.on_drop(), service.message_cb(account_id))
         except TgError as e:
+            log.warning(
+                "power-on failed account=%s status=%s raw=%s detail=%s", account_id, e.status, e.raw, e.detail
+            )
+            async with service.sessionmaker() as session:
+                acc = await session.get(Account, account_id)
+                await service.log_activity(
+                    session, "error", "connect_failed", f"@{acc.username if acc else account_id}: {e.detail} [{e.raw}]", account_id
+                )
+                await session.commit()
             await service._mark_status(account_id, e.status, e.detail, power_off=e.dead)
             async with service.sessionmaker() as session:
                 acc = await session.get(Account, account_id)
@@ -105,7 +122,10 @@ async def set_power(account_id: int, body: PowerBody, request: Request) -> dict:
         await service.manager.disconnect(account_id)
         async with service.sessionmaker() as session:
             acc = await session.get(Account, account_id)
+            old = acc.status
             acc.status, acc.power_on, acc.status_detail = "offline", False, None
+            if acc.status != old:
+                await service._enqueue_status(session, acc)
             await session.commit()
     return {"ok": True}
 
