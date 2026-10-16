@@ -34,11 +34,18 @@ from panel.config import get_settings
 from panel.db import make_engine, make_sessionmaker
 from panel.models import Account, Chat, Message
 
-ACCOUNT_USERNAME = sys.argv[1] if len(sys.argv) > 1 else "i965a1qrm539r469"
-PEER_ID = sys.argv[2] if len(sys.argv) > 2 else "1175302541"
+_flags = [a for a in sys.argv[1:] if a.startswith("--")]
+_pos = [a for a in sys.argv[1:] if not a.startswith("--")]
+ACCOUNT_USERNAME = _pos[0] if len(_pos) > 0 else "i965a1qrm539r469"
+PEER_ID = _pos[1] if len(_pos) > 1 else "1175302541"
+SWEEP_PLATFORM = "--sweep-platform" in _flags
 
 MODEL_ID = 3073
 PRESET_ID = 6823
+
+# platform `/generateResponse` accepts is not reliably documented; "Telegram" 500s for us. Sweep these,
+# ordered by how well each fits a Telegram chat (Telegram links are always clickable, same as "Web").
+PLATFORM_CANDIDATES = ["telegram", "Telegram", "TELEGRAM", "Web", "web", "Snapchat", "Instagram", None]
 
 
 def mask(body: dict) -> str:
@@ -140,6 +147,31 @@ def run_case(client: httpx.Client, label: str, body: dict) -> bool:
     return err
 
 
+def sweep_platform(client: httpx.Client, base: dict) -> None:
+    """Vary ONLY `platform` on the known-good Playground baseline to find which values Capitalbot accepts."""
+    results: dict[str, bool] = {}
+    for value in PLATFORM_CANDIDATES:
+        body = copy.deepcopy(base)
+        if value is None:
+            body.pop("platform", None)
+            label = "(platform omitted)"
+        else:
+            body["platform"] = value
+            label = repr(value)
+        results[label] = run_case(client, f"platform = {label}", body)
+
+    print("\n" + "#" * 72)
+    print("PLATFORM SWEEP VERDICT")
+    print("#" * 72)
+    for label, err in results.items():
+        print(f"  {'ERROR' if err else 'OK   '}  platform = {label}")
+    ok = [label for label, err in results.items() if not err]
+    if ok:
+        print(f"\nUse this platform value: {ok[0]}  (first accepted, ordered best-fit for Telegram)")
+    else:
+        print("\nNo candidate was accepted — widen PLATFORM_CANDIDATES and re-run.")
+
+
 async def main() -> None:
     settings = get_settings()
     import os
@@ -148,8 +180,17 @@ async def main() -> None:
     if not license_key:
         raise SystemExit("CAPITAL_LICENSE_KEY is not set in the environment or settings.")
 
-    parts = await panel_request_parts(license_key)
     base = playground_base(license_key)
+
+    if SWEEP_PLATFORM:
+        with httpx.Client() as client:
+            base_err = run_case(client, "PLAYGROUND baseline (expected OK)", copy.deepcopy(base))
+            if base_err:
+                print("\nBaseline itself errored — fix that before trusting the sweep.")
+            sweep_platform(client, base)
+        return
+
+    parts = await panel_request_parts(license_key)
 
     # Each variant = the Playground baseline with exactly ONE field swapped to the panel's real value.
     single_swaps = {
