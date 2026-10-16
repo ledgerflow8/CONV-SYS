@@ -1,5 +1,6 @@
 """The Capitalbot client (panel/capital.py): request/response contract and the retry policy."""
 
+import json
 from datetime import datetime, timezone
 
 import httpx
@@ -150,6 +151,20 @@ async def test_200_with_blank_error_is_treated_as_success():
     assert r.has_content
     r2 = await _gen(_client([_ok({"content": [{"type": "text", "content": "hi"}], "error": ""})]))
     assert r2.has_content
+
+
+async def test_request_sends_exact_platform_value():
+    # Capitalbot's platform is case-sensitive: "Telegram" is accepted, "telegram" 500s. Pin it.
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": [{"type": "text", "content": "hi"}]})
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = CapitalClient("lic", http, retry_delay=0.0)
+    await _gen(client)
+    assert seen["body"]["platform"] == "Telegram"
 
 
 async def test_media_upload_sends_multipart_with_file(tmp_path):

@@ -22,6 +22,10 @@ import httpx
 log = logging.getLogger("panel.capital")
 
 BASE_URL = "https://api.capitalbot.ai"
+# The `platform` value Capitalbot accepts for our accounts. It is CASE-SENSITIVE: the engine accepts
+# "Telegram" but rejects "telegram" with a 500 (confirmed by scripts/diag_capital.py --sweep-platform,
+# and CapitalAI_Docs.md:315 names "Telegram"). Do not lowercase or rename this.
+PLATFORM = "Telegram"
 GENERATE_TIMEOUT = 90.0
 CATALOG_TIMEOUT = 30.0
 CATALOG_TTL = 600.0  # 10 minutes (PLAN.md §5)
@@ -163,7 +167,7 @@ class CapitalClient:
             "modelId": model_id,
             "presetId": preset_id,
             "accountId": account_id,
-            "platform": "Telegram",
+            "platform": PLATFORM,
             "userInfos": user_infos,
             "chatHistory": chat_history,
         }
