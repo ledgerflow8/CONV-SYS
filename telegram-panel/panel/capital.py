@@ -29,7 +29,8 @@ PLATFORM = "Telegram"
 GENERATE_TIMEOUT = 90.0
 CATALOG_TIMEOUT = 30.0
 CATALOG_TTL = 600.0  # 10 minutes (PLAN.md §5)
-RETRY_DELAY = 10.0  # the once-only retry for a 429 / dropped connection
+RETRY_DELAY = 10.0  # the once-only retry for a 429 / dropped connection when no retryAfter is given
+RETRY_AFTER_CAP = 30.0  # never wait longer than this for a 429's retryAfter
 
 # The only persona fields Capitalbot accepts as request overrides (PLAN.md §3).
 ALLOWED_OVERRIDE_KEYS = frozenset(
@@ -101,12 +102,13 @@ class CapitalError(Exception):
       - bad_response              → a 200 whose body wasn't the documented shape.
     """
 
-    def __init__(self, kind: str, detail: str, *, status_code: int | None = None, pause: bool = False):
+    def __init__(self, kind: str, detail: str, *, status_code: int | None = None, pause: bool = False, retry_after: float | None = None):
         super().__init__(detail)
         self.kind = kind
         self.detail = detail
         self.status_code = status_code
         self.pause = pause
+        self.retry_after = retry_after  # seconds Capitalbot asked us to wait (429 only)
 
 
 class CapitalClient:
@@ -185,8 +187,11 @@ class CapitalClient:
             except CapitalError as e:
                 last_exc = e
                 if e.kind in ("connection", "rate_limited") and attempt == 1:
-                    if self._retry_delay and e.kind == "rate_limited":
-                        await asyncio.sleep(self._retry_delay)
+                    if e.kind == "rate_limited":
+                        # Honour the server's retryAfter (e.g. its "Duplicate request" guard), capped.
+                        delay = min(RETRY_AFTER_CAP, e.retry_after + 1 if e.retry_after else self._retry_delay)
+                        if delay:
+                            await asyncio.sleep(delay)
                     log.info("capital %s on attempt %s; retrying once", e.kind, attempt)
                     continue
                 raise
@@ -220,7 +225,12 @@ class CapitalClient:
         if code == 200:
             return resp
         if code == 429:
-            raise CapitalError("rate_limited", "Capitalbot rate-limited the request (429)", status_code=429)
+            raise CapitalError(
+                "rate_limited",
+                f"Capitalbot rate-limited the request (429): {_short(resp)}",
+                status_code=429,
+                retry_after=_retry_after(resp),
+            )
         if code in (400, 401, 403):
             raise CapitalError("client", f"Capitalbot rejected the request ({code}): {_short(resp)}", status_code=code, pause=True)
         if 500 <= code < 600:
@@ -277,6 +287,20 @@ def _redact(fields: dict, file_path: str | None) -> str:
     if file_path:
         safe["_file"] = file_path.rsplit("/", 1)[-1]
     return json.dumps(safe, ensure_ascii=False, default=str)
+
+
+def _retry_after(resp: httpx.Response) -> float | None:
+    """Seconds Capitalbot asked us to wait: the body's `retryAfter` or the `Retry-After` header."""
+    try:
+        body = resp.json()
+        if isinstance(body, dict) and isinstance(body.get("retryAfter"), (int, float)):
+            return float(body["retryAfter"])
+    except ValueError:
+        pass
+    header = resp.headers.get("retry-after")
+    if header and header.strip().isdigit():
+        return float(header.strip())
+    return None
 
 
 def _short(resp: httpx.Response) -> str:

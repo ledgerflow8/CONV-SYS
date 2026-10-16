@@ -137,6 +137,43 @@ async def test_400_raises_with_pause():
     assert ei.value.kind == "client" and ei.value.pause is True
 
 
+async def test_429_retry_after_is_honoured(monkeypatch):
+    # Capitalbot's duplicate-request guard returns 429 + retryAfter; we wait that long (+1), not the fallback.
+    import panel.capital as cap
+
+    slept: list[float] = []
+
+    async def fake_sleep(d):
+        slept.append(d)
+
+    monkeypatch.setattr(cap.asyncio, "sleep", fake_sleep)
+    client = _client(
+        [
+            lambda req: httpx.Response(429, json={"error": "Duplicate request – please wait", "retryAfter": 3}),
+            _ok({"content": [{"type": "text", "content": "ok"}]}),
+        ],
+        retry_delay=99,  # must NOT be used when retryAfter is present
+    )
+    r = await _gen(client)
+    assert r.has_content
+    assert slept == [4.0]  # retryAfter (3) + 1
+
+
+async def test_429_without_retry_after_falls_back_to_retry_delay(monkeypatch):
+    import panel.capital as cap
+
+    slept: list[float] = []
+
+    async def fake_sleep(d):
+        slept.append(d)
+
+    monkeypatch.setattr(cap.asyncio, "sleep", fake_sleep)
+    client = _client([lambda req: httpx.Response(429), _ok({"content": [{"type": "text", "content": "ok"}]})], retry_delay=5)
+    r = await _gen(client)
+    assert r.has_content
+    assert slept == [5]
+
+
 async def test_200_with_error_in_body_raises_server_not_empty():
     # Capitalbot sometimes returns HTTP 200 with a server-side error and empty content.
     client = _client([_ok({"messages": [], "content": [], "error": "Internal server error"})])
