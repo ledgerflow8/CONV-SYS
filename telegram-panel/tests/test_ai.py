@@ -303,6 +303,26 @@ def test_timeout_logs_but_leaves_ai_on_and_sends_nothing(client, directory):
     assert fake_client(client, acc).sent == []
 
 
+def test_server_error_body_surfaces_on_status_not_as_empty(client, directory):
+    # A 200 whose body carried {"error": ...} reaches ai.py as a server CapitalError.
+    acc = setup(client, directory, 79, 8000, "juno")
+    set_capital(client, FakeCapital(CapitalError("server", "Capitalbot returned an error in a 200 body: Internal server error", status_code=200)))
+    deliver(client, acc, IncomingMessage(fan(), tg_msg_id=1, out=False, kind="text", text="hi", at=at(9)))
+    run_turn(client, acc)
+
+    kinds = [k for k, _ in activities(client)]
+    assert "ai_error" in kinds
+    assert "ai_empty" not in kinds  # the error path, not the "empty content, no flag" bug path
+    assert fake_client(client, acc).sent == []
+    assert client.app.state.ai.last_error and "Internal server error" in client.app.state.ai.last_error
+
+    async def _ai_on():
+        async with client.app.state.sessionmaker() as s:
+            return (await s.get(Account, acc)).ai_on
+
+    assert run(client, _ai_on) is True  # a server error must not pause the account
+
+
 # ── the debounce trigger (notify → run) ──────────────────────────────────────────
 def test_fan_message_triggers_a_debounced_reply(client, directory):
     acc = setup(client, directory, 79, 8000, "jade")

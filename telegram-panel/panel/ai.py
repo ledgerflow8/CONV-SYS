@@ -43,8 +43,12 @@ FILTER_FLAGS = ("tierFiltered", "genderFiltered", "ignored", "messagedAlready", 
 
 
 def build_chat_history(msgs: list[Message], *, max_messages: int = HISTORY_MESSAGES, max_bytes: int = HISTORY_MAX_BYTES) -> list[dict]:
-    """The last messages as Capitalbot's chatHistory. `out` → assistant, fan → user; media becomes a
-    marker; every entry carries an integer Unix-second timestamp (a missing one is a 400)."""
+    """The last messages as Capitalbot's chatHistory. `out` → bot, fan → user; media becomes a
+    marker; every entry carries an integer Unix-second timestamp (a missing one is a 400).
+
+    The model's own turns are role `"bot"`, not `"assistant"` — that is the format Capitalbot's engine
+    and Playground use (CapitalAI_Docs.md §"Follow-up Generation", lines 635/645/699). `"assistant"`
+    appears only in the `/api/conversation` read transcript and makes `/generateResponse` 500."""
     items: list[dict] = []
     for m in msgs[-max_messages:]:
         if m.kind == "text" or m.kind == "other":
@@ -53,7 +57,7 @@ def build_chat_history(msgs: list[Message], *, max_messages: int = HISTORY_MESSA
             content = KIND_MARKERS.get(m.kind) or (m.text or "").strip()
         if not content:
             continue
-        items.append({"role": "assistant" if m.direction == "out" else "user", "content": content, "timestamp": int(m.at.timestamp())})
+        items.append({"role": "bot" if m.direction == "out" else "user", "content": content, "timestamp": int(m.at.timestamp())})
     # Trim from the front until the JSON fits, but always keep at least the latest entry.
     while len(items) > 1 and len(json.dumps(items, ensure_ascii=False).encode()) > max_bytes:
         items.pop(0)

@@ -23,9 +23,25 @@ def test_history_roles_markers_and_integer_timestamps():
         _msg("in", "text", "   ", 1011),  # blank → dropped
     ]
     h = build_chat_history(msgs)
-    assert [m["role"] for m in h] == ["user", "assistant", "user"]
+    # The model's own turn is role "bot" (Capitalbot/Playground format), never "assistant".
+    assert [m["role"] for m in h] == ["user", "bot", "user"]
     assert h[2]["content"] == "*IMAGE*"
     assert all(isinstance(m["timestamp"], int) for m in h)
+
+
+def test_history_matches_playground_shape():
+    # The exact shape Capitalbot's Playground accepts for model 3073 / preset 6823: role "user"/"bot",
+    # second-granularity integer timestamps.
+    msgs = [
+        _msg("in", "text", "hi", 1792122913),
+        _msg("out", "text", "Heyy", 1792122916),
+        _msg("out", "text", "🥰", 1792122917),
+    ]
+    assert build_chat_history(msgs) == [
+        {"role": "user", "content": "hi", "timestamp": 1792122913},
+        {"role": "bot", "content": "Heyy", "timestamp": 1792122916},
+        {"role": "bot", "content": "🥰", "timestamp": 1792122917},
+    ]
 
 
 def test_history_trims_to_byte_cap_but_keeps_one():
@@ -118,6 +134,22 @@ async def test_400_raises_with_pause():
     with pytest.raises(CapitalError) as ei:
         await _gen(client)
     assert ei.value.kind == "client" and ei.value.pause is True
+
+
+async def test_200_with_error_in_body_raises_server_not_empty():
+    # Capitalbot sometimes returns HTTP 200 with a server-side error and empty content.
+    client = _client([_ok({"messages": [], "content": [], "error": "Internal server error"})])
+    with pytest.raises(CapitalError) as ei:
+        await _gen(client)
+    assert ei.value.kind == "server" and not ei.value.pause
+    assert "Internal server error" in ei.value.detail
+
+
+async def test_200_with_blank_error_is_treated_as_success():
+    r = await _gen(_client([_ok({"content": [{"type": "text", "content": "hi"}], "error": None})]))
+    assert r.has_content
+    r2 = await _gen(_client([_ok({"content": [{"type": "text", "content": "hi"}], "error": ""})]))
+    assert r2.has_content
 
 
 async def test_media_upload_sends_multipart_with_file(tmp_path):

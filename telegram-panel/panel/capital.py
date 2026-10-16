@@ -171,6 +171,9 @@ class CapitalClient:
             if k in ALLOWED_OVERRIDE_KEYS and v is not None:
                 fields[k] = v
 
+        # Exactly what we send, license key redacted, so a bad modelId/presetId/history is visible in the logs.
+        log.info("capital generateResponse → %s", _redact(fields, file_path))
+
         last_exc: CapitalError | None = None
         for attempt in (1, 2):
             try:
@@ -228,6 +231,12 @@ class CapitalClient:
         if not isinstance(data, dict):
             raise CapitalError("bad_response", "Capitalbot returned a 200 that wasn't an object")
 
+        # A 200 can still carry a server-side failure (e.g. {"error": "Internal server error"}): surface
+        # it as an error, not as the "empty content, no flag" Capitalbot-bug path. Not retried, not paused.
+        err = data.get("error")
+        if isinstance(err, str) and err.strip():
+            raise CapitalError("server", f"Capitalbot returned an error in a 200 body: {err.strip()[:200]}", status_code=200)
+
         content: list[ContentItem] = []
         for item in data.get("content") or []:
             if not isinstance(item, dict):
@@ -256,6 +265,14 @@ class CapitalClient:
             cooldown_until=int(cooldown) if isinstance(cooldown, (int, float)) else None,
             raw=data,
         )
+
+
+def _redact(fields: dict, file_path: str | None) -> str:
+    """The outgoing request body as JSON, with the license key hidden and any attached file named."""
+    safe = {k: ("***" if k == "licensekey" else v) for k, v in fields.items()}
+    if file_path:
+        safe["_file"] = file_path.rsplit("/", 1)[-1]
+    return json.dumps(safe, ensure_ascii=False, default=str)
 
 
 def _short(resp: httpx.Response) -> str:
