@@ -7,12 +7,15 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from panel.accounts import AccountManager
+from panel.ai import AiEngine
 from panel.auth import LoginLimiter, Signer
+from panel.capital import CapitalClient
 from panel.config import Settings, get_settings
 from panel.crypto import Crypto
 from panel.db import init_db, make_engine, make_sessionmaker
@@ -21,6 +24,7 @@ from panel.portal import OutboxWorker, PortalConfig
 from panel.routes import accounts as account_routes
 from panel.routes import auth as auth_routes
 from panel.routes import imports as import_routes
+from panel.routes import profiles as profile_routes
 from panel.routes import system as system_routes
 from panel.service import Service
 from panel.tg.client import ClientFactory, telethon_factory
@@ -56,18 +60,30 @@ def create_app(settings: Settings | None = None, dist: Path = DIST, client_facto
                 settings.tg_api_hash,
             )
             app.state.background = set()
+            # One shared httpx client for the portal outbox and Capitalbot / media downloads.
+            http = httpx.AsyncClient()
+            app.state.http = http
             # Outbox worker: signs and ships portal events. Idle until PORTAL_INGEST_* are set.
             portal_config = PortalConfig(settings.portal_ingest_url, settings.portal_ingest_api_key, settings.portal_ingest_hmac_secret)
-            worker = OutboxWorker(sessionmaker, portal_config)
+            worker = OutboxWorker(sessionmaker, portal_config, client=http)
             app.state.outbox = worker
+            # Capitalbot client + the AI reply worker (step 3). Idle until CAPITAL_LICENSE_KEY is set.
+            capital = CapitalClient(settings.capital_license_key, http)
+            app.state.capital = capital
+            engine_ai = AiEngine(sessionmaker, manager, capital, app.state.crypto, settings.data_dir, http)
+            engine_ai.service_record = app.state.service.record_ai_message
+            app.state.service.ai = engine_ai
+            app.state.ai = engine_ai
             await app.state.service.connect_powered_on()
             app.state.background.add(asyncio.create_task(worker.run()))
             try:
                 yield
             finally:
                 await manager.shutdown()  # disconnect every client; never log out
+                await engine_ai.shutdown()
                 for task in list(app.state.background):
                     task.cancel()
+                await http.aclose()
         finally:
             await engine.dispose()
             lock.release()
@@ -96,6 +112,7 @@ def create_app(settings: Settings | None = None, dist: Path = DIST, client_facto
     app.include_router(auth_routes.router)
     app.include_router(account_routes.router)
     app.include_router(import_routes.router)
+    app.include_router(profile_routes.router)
     app.include_router(system_routes.router)
 
     @app.get("/healthz")

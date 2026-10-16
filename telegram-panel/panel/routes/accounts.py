@@ -6,9 +6,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 
 from panel.auth import require_login
+from panel.capital import ALLOWED_OVERRIDE_KEYS
 from panel.db import get_setting
 from panel.health import health_color
-from panel.models import Account
+from panel.models import Account, Chat, Profile
 from panel.tg.client import TgError
 
 router = APIRouter(prefix="/api/accounts", dependencies=[Depends(require_login)])
@@ -74,8 +75,59 @@ async def get_account(account_id: int, request: Request) -> dict:
             raise HTTPException(404, "No such account")
         quiet = await _quiet_hours(session)
         card = _card(acc, quiet, service.manager.is_connected(acc.id))
-        card["profile_overrides"] = acc.profile_overrides
+        card["profile_overrides"] = acc.profile_overrides or {}
+        if acc.profile_id is not None:
+            prof = await session.get(Profile, acc.profile_id)
+            card["profile_name"] = prof.name if prof else None
+        else:
+            card["profile_name"] = None
+        chats = (
+            await session.scalars(
+                select(Chat)
+                .where(Chat.account_id == account_id)
+                .order_by(Chat.last_in_at.desc().nullslast(), Chat.id.desc())
+                .limit(20)
+            )
+        ).all()
+        card["chats"] = [
+            {
+                "peer_id": c.peer_id,
+                "peer_name": c.peer_name,
+                "peer_username": c.peer_username,
+                "ai_state": c.ai_state,
+                "ai_state_reason": c.ai_state_reason,
+                "cooldown_until": c.cooldown_until.isoformat() if c.cooldown_until else None,
+                "last_in_at": c.last_in_at.isoformat() if c.last_in_at else None,
+                "last_out_at": c.last_out_at.isoformat() if c.last_out_at else None,
+            }
+            for c in chats
+        ]
     return card
+
+
+class PatchBody(BaseModel):
+    profile_id: int | None = None
+    profile_overrides: dict | None = None
+
+
+@router.patch("/{account_id}")
+async def patch_account(account_id: int, body: PatchBody, request: Request) -> dict:
+    service = _service(request)
+    async with service.sessionmaker() as session:
+        acc = await session.get(Account, account_id)
+        if not acc:
+            raise HTTPException(404, "No such account")
+        fields = body.model_dump(exclude_unset=True)
+        if "profile_id" in fields:
+            if body.profile_id is not None and not await session.get(Profile, body.profile_id):
+                raise HTTPException(404, "No such persona")
+            acc.profile_id = body.profile_id
+            if body.profile_id is None:
+                acc.ai_on = False  # AI can't run without a persona
+        if "profile_overrides" in fields:
+            acc.profile_overrides = {k: v for k, v in (body.profile_overrides or {}).items() if k in ALLOWED_OVERRIDE_KEYS and v is not None}
+        await session.commit()
+    return {"ok": True}
 
 
 class PowerBody(BaseModel):
@@ -179,6 +231,21 @@ async def delete_account(account_id: int, body: DeleteBody, request: Request) ->
             await service.log_activity(session, "info", "account_deleted", f"@{acc.username or acc.tg_user_id} removed")
             await session.delete(acc)  # chats/messages cascade
             await session.commit()
+    return {"ok": True}
+
+
+@router.post("/{account_id}/chats/{peer}/reset")
+async def reset_chat(account_id: int, peer: str, request: Request) -> dict:
+    """Put a stopped/filtered/converted chat back to `active` so the AI resumes (PLAN.md §5).
+    underage is permanent and can't be reset."""
+    async with _service(request).sessionmaker() as session:
+        chat = await session.scalar(select(Chat).where(Chat.account_id == account_id, Chat.peer_id == peer))
+        if not chat:
+            raise HTTPException(404, "No such chat")
+        if chat.ai_state == "stopped" and chat.ai_state_reason == "underage":
+            raise HTTPException(409, "An underage-flagged chat can't be reset.")
+        chat.ai_state, chat.ai_state_reason, chat.cooldown_until = "active", None, None
+        await session.commit()
     return {"ok": True}
 
 

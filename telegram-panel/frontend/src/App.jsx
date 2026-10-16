@@ -5,8 +5,8 @@ import Drawer from "./components/Drawer.jsx";
 import Login from "./pages/Login.jsx";
 import Accounts from "./pages/Accounts.jsx";
 import Add from "./pages/Add.jsx";
+import Personas from "./pages/Personas.jsx";
 import Status from "./pages/Status.jsx";
-import Placeholder from "./pages/Placeholder.jsx";
 
 export const NAV = [
   { href: "/accounts", label: "Accounts", emoji: "📱" },
@@ -18,7 +18,7 @@ export const NAV = [
 const PAGES = {
   "/accounts": () => <Accounts />,
   "/add": () => <Add />,
-  "/personas": () => <Placeholder title="Personas" note="Capitalbot personas arrive in step 3." />,
+  "/personas": () => <Personas />,
   "/status": () => <Status />,
 };
 

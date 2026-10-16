@@ -48,6 +48,7 @@ class Service:
         self.default_api_id = default_api_id
         self.default_api_hash = default_api_hash
         self.import_gap_seconds = 2.0  # pause between test-connects so a batch isn't a login flood
+        self.ai = None  # the AiEngine, wired in by main.lifespan (step 3). None in step-1/2 tests.
 
     # ── helpers ────────────────────────────────────────────────────────────
     def connect_params(self, acc: Account, session_string: str | None = None) -> ConnectParams:
@@ -110,6 +111,39 @@ class Service:
                 chat.first_reply_at = msg.at
 
             await self._report_chat(session, acc, chat)
+            # A fresh fan message on an AI-enabled account wakes the debounced AI worker (step 3).
+            should_ai = (not msg.out) and acc.ai_on and acc.power_on and acc.profile_id is not None
+            await session.commit()
+
+        if should_ai and self.ai is not None:
+            self.ai.notify(account_id, msg.peer.peer_id)
+
+    async def record_ai_message(self, account_id: int, peer_id: str, tg_msg_id: int, kind: str, text: str | None, at: datetime) -> None:
+        """Store an outgoing AI message after Telegram accepted it, and roll the chat/account forward
+        the same way an inbound message would (so first-reply reporting fires). Idempotent, and it
+        relabels a row the outgoing-message listener may have stored first as `manual`."""
+        async with self.sessionmaker() as session:
+            acc = await session.get(Account, account_id)
+            if acc is None:
+                return
+            existing = await session.scalar(
+                select(Message).where(
+                    Message.account_id == account_id, Message.peer_id == peer_id, Message.tg_msg_id == tg_msg_id
+                )
+            )
+            if existing is not None:
+                existing.sender, existing.kind = "ai", kind  # the AI label wins over a raced `manual`
+            else:
+                session.add(
+                    Message(account_id=account_id, peer_id=peer_id, tg_msg_id=tg_msg_id, direction="out", sender="ai", kind=kind, text=text, at=at)
+                )
+            chat = await session.scalar(select(Chat).where(Chat.account_id == account_id, Chat.peer_id == peer_id))
+            if chat is not None:
+                chat.last_out_at = _later(chat.last_out_at, at)
+                if chat.first_in_at is not None and chat.first_reply_at is None and at >= chat.first_in_at:
+                    chat.first_reply_at = at
+                await self._report_chat(session, acc, chat)
+            acc.last_msg_at = _later(acc.last_msg_at, at)
             await session.commit()
 
     async def _store_message(self, session: AsyncSession, account_id: int, msg: IncomingMessage) -> None:

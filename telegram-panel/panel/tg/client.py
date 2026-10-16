@@ -115,6 +115,12 @@ class TgClient(Protocol):
     async def wait_disconnected(self) -> TgError | None: ...
     def session_string(self) -> str: ...
     def on_private_message(self, cb: MessageCallback) -> None: ...
+    # Sending (step 3, used by the AI worker). Each returns the sent message's Telegram id.
+    async def send_text(self, peer_id: int, text: str) -> int: ...
+    async def send_file(self, peer_id: int, path: str, *, voice: bool = False) -> int: ...
+    async def mark_read(self, peer_id: int) -> None: ...
+    async def typing(self, peer_id: int, seconds: float) -> None: ...
+    async def download_message_media(self, peer_id: int, tg_msg_id: int, dest_dir: Path) -> Path | None: ...
 
 
 ClientFactory = Callable[[ConnectParams], TgClient]
@@ -264,6 +270,32 @@ class TelethonClient:
 
     def session_string(self) -> str:
         return self._c.session.save()
+
+    # ── sending (step 3) ──────────────────────────────────────────────────────
+    async def send_text(self, peer_id: int, text: str) -> int:
+        m = await self._c.send_message(peer_id, text)
+        return m.id
+
+    async def send_file(self, peer_id: int, path: str, *, voice: bool = False) -> int:
+        m = await self._c.send_file(peer_id, path, voice_note=voice)
+        return m.id
+
+    async def mark_read(self, peer_id: int) -> None:
+        await self._c.send_read_acknowledge(peer_id)
+
+    async def typing(self, peer_id: int, seconds: float) -> None:
+        if seconds <= 0:
+            return
+        async with self._c.action(peer_id, "typing"):
+            await asyncio.sleep(seconds)
+
+    async def download_message_media(self, peer_id: int, tg_msg_id: int, dest_dir: Path) -> Path | None:
+        msg = await self._c.get_messages(peer_id, ids=tg_msg_id)
+        if msg is None or not msg.media:
+            return None
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        got = await msg.download_media(file=str(dest_dir) + "/")
+        return Path(got) if got else None
 
     def on_private_message(self, cb: MessageCallback) -> None:
         async def handler(event: events.NewMessage.Event) -> None:

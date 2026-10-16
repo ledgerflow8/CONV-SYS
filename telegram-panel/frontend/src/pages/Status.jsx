@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, RefreshCw } from "lucide-react";
 import { api } from "../api.js";
 import { ago } from "../time.js";
+import Toggle from "../components/Toggle.jsx";
 
 function Stat({ label, value, tone }) {
   return (
@@ -12,23 +13,64 @@ function Stat({ label, value, tone }) {
   );
 }
 
+function NumberSetting({ label, value, onSave }) {
+  const [v, setV] = useState(value);
+  useEffect(() => setV(value), [value]);
+  const commit = () => {
+    const n = Number(v);
+    if (Number.isFinite(n) && n !== value) onSave(n);
+    else setV(value);
+  };
+  return (
+    <label className="flex items-center justify-between gap-4 text-sm">
+      <span>{label}</span>
+      <input
+        type="number"
+        value={v}
+        onChange={(e) => setV(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+        className="h-9 w-24 rounded-lg border bg-background px-3 text-right outline-none focus:ring-2 focus:ring-ring"
+      />
+    </label>
+  );
+}
+
 export default function Status() {
   const [status, setStatus] = useState(null);
   const [activity, setActivity] = useState([]);
+  const [settings, setSettings] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const timer = useRef(null);
 
   const load = useCallback(async () => {
     try {
-      const [s, a] = await Promise.all([api("/api/system/status"), api("/api/system/activity")]);
+      const [s, a, cfg] = await Promise.all([
+        api("/api/system/status"),
+        api("/api/system/activity"),
+        api("/api/system/settings"),
+      ]);
       setStatus(s);
       setActivity(a.activity);
+      setSettings(cfg.settings);
       setError("");
     } catch (e) {
       setError(e.message);
     }
   }, []);
+
+  const saveSetting = async (patch) => {
+    setSettings((s) => ({ ...s, ...patch }));
+    try {
+      const r = await api("/api/system/settings", { method: "PATCH", body: patch });
+      setSettings(r.settings);
+      await load();
+    } catch (e) {
+      setError(e.message);
+      await load();
+    }
+  };
 
   useEffect(() => {
     load();
@@ -53,6 +95,7 @@ export default function Status() {
   };
 
   const p = status?.portal;
+  const ai = status?.ai;
 
   return (
     <div className="space-y-4">
@@ -121,6 +164,48 @@ export default function Status() {
           </>
         )}
       </section>
+
+      <section className="space-y-3 rounded-xl border bg-card p-4">
+        <div className="flex items-center justify-between">
+          <h2 className="font-medium">Capitalbot AI</h2>
+          {ai &&
+            (ai.configured ? (
+              <span className="inline-flex items-center gap-1 text-xs text-emerald-600">
+                <CheckCircle2 className="size-4" /> Connected
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 text-xs text-amber-600">
+                <AlertTriangle className="size-4" /> No license key
+              </span>
+            ))}
+        </div>
+        {ai && (
+          <>
+            <label className="flex items-center justify-between gap-4">
+              <span className="text-sm">
+                <span className="font-medium">AI replies</span>
+                <span className="block text-xs text-muted-foreground">Master kill switch for every account.</span>
+              </span>
+              <Toggle on={!!ai.global_on} label="AI replies" onChange={(v) => saveSetting({ ai_global_on: v })} />
+            </label>
+            {ai.credit_over_until && (
+              <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                AI credits depleted — replies paused until {ago(ai.credit_over_until)} from now.
+              </p>
+            )}
+            {ai.last_error && <p className="text-sm text-amber-600">Last AI error: {ai.last_error}</p>}
+          </>
+        )}
+      </section>
+
+      {settings && (
+        <section className="space-y-3 rounded-xl border bg-card p-4">
+          <h2 className="font-medium">Settings</h2>
+          <NumberSetting label="Quiet after (hours)" value={settings.quiet_after_hours} onSave={(v) => saveSetting({ quiet_after_hours: v })} />
+          <NumberSetting label="Reply delay (seconds)" value={settings.ai_debounce_sec} onSave={(v) => saveSetting({ ai_debounce_sec: v })} />
+          <NumberSetting label="Typing speed (chars/sec)" value={settings.typing_cps} onSave={(v) => saveSetting({ typing_cps: v })} />
+        </section>
+      )}
 
       <section className="space-y-2 rounded-xl border bg-card p-4">
         <h2 className="font-medium">Recent activity</h2>

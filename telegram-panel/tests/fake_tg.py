@@ -21,6 +21,8 @@ class FakeAccount:
     last_incoming_at: datetime | None = None
     # (first_in, first_reply) a dialog_firsts() lookup returns, keyed by peer id string.
     dialog_firsts: dict[str, tuple[datetime | None, datetime | None]] = field(default_factory=dict)
+    # fan media available to download_message_media(), keyed by (peer_id str, tg_msg_id) → bytes.
+    media: dict[tuple[str, int], bytes] = field(default_factory=dict)
 
 
 class FakeClient:
@@ -30,6 +32,9 @@ class FakeClient:
         self._fake = directory.by_session.get(params.session)
         self._disconnected: asyncio.Future = asyncio.get_event_loop().create_future()
         self.logged_out = False
+        self.sent: list[dict] = []  # what the AI worker sent through this client
+        self.read_marked = 0
+        self._next_id = 10_000
 
     async def start(self) -> AccountInfo:
         self._dir.started.append(self._params.session)
@@ -67,6 +72,32 @@ class FakeClient:
 
     def session_string(self) -> str:
         return self._params.session
+
+    # ── sending (step 3) ──────────────────────────────────────────────────────
+    async def send_text(self, peer_id: int, text: str) -> int:
+        self._next_id += 1
+        self.sent.append({"peer": peer_id, "type": "text", "text": text, "id": self._next_id})
+        return self._next_id
+
+    async def send_file(self, peer_id: int, path: str, *, voice: bool = False) -> int:
+        self._next_id += 1
+        self.sent.append({"peer": peer_id, "type": "voice" if voice else "file", "path": path, "id": self._next_id})
+        return self._next_id
+
+    async def mark_read(self, peer_id: int) -> None:
+        self.read_marked += 1
+
+    async def typing(self, peer_id: int, seconds: float) -> None:
+        return  # instant in tests
+
+    async def download_message_media(self, peer_id: int, tg_msg_id: int, dest_dir: Path):
+        data = self._fake.media.get((str(peer_id), tg_msg_id)) if self._fake else None
+        if data is None:
+            return None
+        Path(dest_dir).mkdir(parents=True, exist_ok=True)
+        p = Path(dest_dir) / f"{peer_id}_{tg_msg_id}.jpg"
+        p.write_bytes(data)
+        return p
 
     def on_private_message(self, cb) -> None:
         self._cb = cb

@@ -3,7 +3,7 @@
 Read `PLAN.md` (this folder) before doing anything. It is the source of truth for scope, data model, routes, screens and build order. The API reference is `CapitalAI_Docs.md`.
 
 ## Project
-A standalone panel that holds the client's Telegram accounts: it connects each account, lets Capitalbot AI chat on it, and reports convos to the VA portal (the Next.js site one folder up). It deploys on its own to an Ubuntu VPS and never imports code from the portal.
+A standalone panel that holds the client's Telegram accounts: it connects each account, lets Capitalbot AI chat on it, and reports convos to the VA portal (the Next.js site one folder up). It deploys on its own as a Render Web Service and never imports code from the portal.
 
 ## Stack
 Python 3.12, FastAPI + Telethon in one asyncio process, SQLite (WAL) through SQLAlchemy 2 (async), React + Vite frontend (plain JSX) built to `frontend/dist` and served by FastAPI. pytest. Deployed as one Render Web Service (single instance, persistent disk).
