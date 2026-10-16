@@ -92,32 +92,35 @@ async def set_power(account_id: int, body: PowerBody, request: Request) -> dict:
         if body.on and acc.status in ("banned", "revoked"):
             raise HTTPException(409, f"This account is {acc.status} and can't be reconnected.")
         params = service.connect_params(acc) if body.on else None
-        acc.power_on = body.on
 
     if body.on:
-        # Already live: power-on is a no-op. Never call connect() for a connected account — that
-        # would trip the "already connected" guard and wrongly flag a healthy account as dead.
-        if service.manager.is_connected(account_id):
-            return {"ok": True, "already_connected": True}
-        try:
-            info = await service.manager.connect(account_id, params, service.on_drop(), service.message_cb(account_id))
-        except TgError as e:
-            log.warning(
-                "power-on failed account=%s status=%s raw=%s detail=%s", account_id, e.status, e.raw, e.detail
-            )
-            async with service.sessionmaker() as session:
-                acc = await session.get(Account, account_id)
-                await service.log_activity(
-                    session, "error", "connect_failed", f"@{acc.username if acc else account_id}: {e.detail} [{e.raw}]", account_id
-                )
-                await session.commit()
-            await service._mark_status(account_id, e.status, e.detail, power_off=e.dead)
-            async with service.sessionmaker() as session:
-                acc = await session.get(Account, account_id)
-                acc.power_on = False
-                await session.commit()
-            raise HTTPException(409, e.detail) from e
-        await service._mark_online(account_id, info)
+        # Connect only if we aren't already holding a live client — calling connect() on a
+        # connected account would trip the "already connected" guard. Either way we reconcile the
+        # DB afterwards, so power_on/status match the live connection and any stale error/off state
+        # from an earlier failed toggle is cleared.
+        if not service.manager.is_connected(account_id):
+            try:
+                info = await service.manager.connect(account_id, params, service.on_drop(), service.message_cb(account_id))
+            except TgError as e:
+                log.warning("power-on failed account=%s status=%s raw=%s detail=%s", account_id, e.status, e.raw, e.detail)
+                async with service.sessionmaker() as session:
+                    acc = await session.get(Account, account_id)
+                    await service.log_activity(
+                        session, "error", "connect_failed", f"@{acc.username if acc else account_id}: {e.detail} [{e.raw}]", account_id
+                    )
+                    acc.power_on = False
+                    await session.commit()
+                await service._mark_status(account_id, e.status, e.detail, power_off=e.dead)
+                raise HTTPException(409, e.detail) from e
+            await service._mark_online(account_id, info)
+        # The account is connected now (freshly or already): make the DB say so.
+        async with service.sessionmaker() as session:
+            acc = await session.get(Account, account_id)
+            acc.power_on = True
+            if acc.status != "online":
+                acc.status, acc.status_detail = "online", None
+                await service._enqueue_status(session, acc)
+            await session.commit()
     else:
         await service.manager.disconnect(account_id)
         async with service.sessionmaker() as session:

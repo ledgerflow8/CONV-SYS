@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from panel.main import create_app
-from panel.models import OutboxItem, utcnow
+from panel.models import Account, OutboxItem, utcnow
 from panel.tg.client import AccountInfo, IncomingMessage, PeerInfo
 from tests.conftest import H, PASSWORD, set_password, speed_up_imports
 from tests.fake_tg import FakeAccount, FakeDirectory
@@ -140,9 +140,35 @@ def test_power_on_while_connected_is_a_noop(client, directory):
     # account dead. It stays online and connected.
     acc = _import(client, directory, 56, AccountInfo(7007, "gwen", "+1", "G"))
     r = client.post(f"/api/accounts/{acc}/power", json={"on": True}, headers=H)
-    assert r.status_code == 200 and r.json().get("already_connected") is True
+    assert r.status_code == 200
     card = client.get(f"/api/accounts/{acc}").json()
     assert card["status"] == "online" and card["connected"] is True and card["color"] != "red"
+
+
+def test_power_on_reconciles_stale_db_when_already_connected(client, directory):
+    # The exact state left by the original bug: the client is still live in memory, but the DB
+    # says power_on=false / status=error. A power-on click must clear that, not just return 200.
+    acc = _import(client, directory, 58, AccountInfo(7009, "ivan", "+1", "I"))
+
+    async def _corrupt():
+        async with client.app.state.sessionmaker() as s:
+            a = await s.get(Account, acc)
+            a.power_on = False
+            a.status, a.status_detail = "error", "Account is already connected"
+            await s.commit()
+
+    client.portal.call(_corrupt)
+    assert client.app.state.service.manager.is_connected(acc)  # still connected in memory
+    assert client.get(f"/api/accounts/{acc}").json()["color"] == "red"  # stale Dead/Off state
+
+    r = client.post(f"/api/accounts/{acc}/power", json={"on": True}, headers=H)
+    assert r.status_code == 200
+
+    card = client.get(f"/api/accounts/{acc}").json()
+    assert card["power_on"] is True
+    assert card["status"] == "online" and card["status_detail"] is None
+    assert card["connected"] is True
+    assert card["color"] in ("green", "amber")  # no longer red/grey
 
 
 def test_system_status_and_retry_endpoints(client, directory):
