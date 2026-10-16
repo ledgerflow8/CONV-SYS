@@ -76,8 +76,12 @@ async def _enqueue(session: AsyncSession, kind: str, dedupe_key: str | None, pay
     session.add(OutboxItem(kind=kind, dedupe_key=dedupe_key, payload=payload))
 
 
-def convo_event(tg_account: str, peer_id: str, first_in_at: datetime, *, peer_phone: str | None, replied_at: datetime | None) -> dict:
-    event: dict = {"tgAccount": tg_account, "peerId": peer_id, "firstMsgAt": iso(first_in_at)}
+def convo_event(
+    tg_account: str, peer_id: str, first_in_at: datetime, *, tg_user_id: str, peer_phone: str | None, replied_at: datetime | None
+) -> dict:
+    # tgUserId is the stable key: the portal matches on it so a convo still lands on the right account
+    # after a username change (the account's username can move; its numeric id never does).
+    event: dict = {"tgAccount": tg_account, "tgUserId": tg_user_id, "peerId": peer_id, "firstMsgAt": iso(first_in_at)}
     if peer_phone:
         event["peerPhone"] = peer_phone
     if replied_at is not None:
@@ -85,24 +89,43 @@ def convo_event(tg_account: str, peer_id: str, first_in_at: datetime, *, peer_ph
     return event
 
 
-async def enqueue_convo(session: AsyncSession, tg_account: str, chat, *, with_reply: bool) -> None:
+async def enqueue_convo(session: AsyncSession, tg_account: str, tg_user_id: str, chat, *, with_reply: bool) -> None:
     kind_suffix = "reply" if with_reply else "first"
     payload = convo_event(
         tg_account,
         chat.peer_id,
         chat.first_in_at,
+        tg_user_id=tg_user_id,
         peer_phone=chat.peer_phone,
         replied_at=chat.first_reply_at if with_reply else None,
     )
-    await _enqueue(session, "convo", f"convo:{tg_account}:{chat.peer_id}:{kind_suffix}", payload)
+    # Dedupe on the stable numeric id, not the username, so a rename can't split a chat into two rows.
+    await _enqueue(session, "convo", f"convo:{tg_user_id}:{chat.peer_id}:{kind_suffix}", payload)
 
 
-async def enqueue_account_status(session: AsyncSession, tg_account: str, status: str, at: datetime, detail: str | None) -> None:
-    payload: dict = {"tgAccount": tg_account, "status": status, "at": iso(at)}
+async def enqueue_account_status(
+    session: AsyncSession, tg_account: str, tg_user_id: str, status: str, at: datetime, detail: str | None
+) -> None:
+    payload: dict = {"tgAccount": tg_account, "tgUserId": tg_user_id, "status": status, "at": iso(at)}
     if detail:
         payload["detail"] = detail[:500]
     # No dedupe key: each status change is its own row, sent in order.
     await _enqueue(session, "account_status", None, payload)
+
+
+async def enqueue_account_rename(
+    session: AsyncSession, tg_user_id: str, old_username: str | None, new_username: str | None, at: datetime
+) -> None:
+    """Tell the portal an account's username changed, so the pool and the VA's tracking link follow.
+    Goes to the account-status endpoint (same auth); the portal keys on the numeric id."""
+    payload = {
+        "tgUserId": tg_user_id,
+        "tgAccount": new_username or tg_user_id,
+        "oldUsername": old_username,
+        "newUsername": new_username,
+        "at": iso(at),
+    }
+    await _enqueue(session, "account_status", f"rename:{tg_user_id}:{new_username}", payload)
 
 
 # ── Outbox worker ────────────────────────────────────────────────────────────

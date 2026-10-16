@@ -190,11 +190,12 @@ class Service:
     async def _report_chat(self, session: AsyncSession, acc: Account, chat: Chat) -> None:
         """Enqueue the convo events this chat is now due. Reporting is independent of the AI toggle."""
         tg_account = acc.username or str(acc.tg_user_id)
+        tg_user_id = str(acc.tg_user_id)
         if chat.first_in_at is not None and not chat.reported_first:
-            await portal.enqueue_convo(session, tg_account, chat, with_reply=False)
+            await portal.enqueue_convo(session, tg_account, tg_user_id, chat, with_reply=False)
             chat.reported_first = True
         if chat.first_reply_at is not None and not chat.reported_reply:
-            await portal.enqueue_convo(session, tg_account, chat, with_reply=True)
+            await portal.enqueue_convo(session, tg_account, tg_user_id, chat, with_reply=True)
             chat.reported_reply = True
 
     async def _enqueue_status(self, session: AsyncSession, acc: Account) -> None:
@@ -202,7 +203,7 @@ class Service:
         if portal_status is None:
             return
         tg_account = acc.username or str(acc.tg_user_id)
-        await portal.enqueue_account_status(session, tg_account, portal_status, utcnow(), acc.status_detail)
+        await portal.enqueue_account_status(session, tg_account, str(acc.tg_user_id), portal_status, utcnow(), acc.status_detail)
 
     async def _on_drop(self, account_id: int, err: TgError | None) -> None:
         """Called by AccountManager when a live connection drops on its own (ban, revoke, network)."""

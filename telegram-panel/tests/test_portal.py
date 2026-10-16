@@ -143,7 +143,7 @@ async def test_worker_sends_one_kind_per_tick(sm):
 
     await _add(sm, "convo", {"tgAccount": "a", "peerId": "1", "firstMsgAt": "2026-10-07T10:00:00Z"})
     async with sm() as s:
-        await enqueue_account_status(s, "a", "banned", at(9), "gone")
+        await enqueue_account_status(s, "a", "123", "banned", at(9), "gone")
         await s.commit()
     w = _worker(sm, handler)
     await w.tick()  # convo first (older id)

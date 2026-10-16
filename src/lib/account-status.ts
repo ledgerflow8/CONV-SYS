@@ -3,25 +3,42 @@
 // TgStatus or VA assignments and never notify. A real ban stays a human action in the pool UI.
 import { z } from "zod";
 import { db } from "@/lib/db";
+import { isUniqueViolation } from "@/lib/action-result";
+import { matchTgAccount } from "@/lib/match-account";
 
 const ISO_WITH_ZONE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:?\d{2})$/i;
 
+const isoAt = z
+  .string()
+  .trim()
+  .regex(ISO_WITH_ZONE, "must be ISO 8601 with a timezone")
+  .transform((s, ctx) => {
+    const d = new Date(s.replace(" ", "T"));
+    if (Number.isNaN(d.getTime())) {
+      ctx.addIssue({ code: "custom", message: "is not a real date" });
+      return z.NEVER;
+    }
+    return d;
+  });
+
+const optionalStr = (max: number) => z.preprocess((v) => (v === "" || v === null ? undefined : v), z.string().trim().max(max).optional());
+const tgUserId = z.preprocess((v) => (v === "" || v === null ? undefined : v), z.string().trim().regex(/^\d{1,19}$/).optional());
+
 export const accountStatusSchema = z.object({
   tgAccount: z.string().trim().min(1).max(64),
+  tgUserId,
   status: z.enum(["online", "offline", "limited", "banned", "revoked"]),
-  at: z
-    .string()
-    .trim()
-    .regex(ISO_WITH_ZONE, "must be ISO 8601 with a timezone")
-    .transform((s, ctx) => {
-      const d = new Date(s.replace(" ", "T"));
-      if (Number.isNaN(d.getTime())) {
-        ctx.addIssue({ code: "custom", message: "is not a real date" });
-        return z.NEVER;
-      }
-      return d;
-    }),
-  detail: z.preprocess((v) => (v === "" || v === null ? undefined : v), z.string().trim().max(500).optional()),
+  at: isoAt,
+  detail: optionalStr(500),
+});
+
+// A username change reported by the panel: the portal moves the account's username + t.me link so the
+// pool and the assigned VA's tracking link follow. Matched on the stable numeric id (CLAUDE.md §10.1).
+export const accountRenameSchema = z.object({
+  tgUserId: z.string().trim().regex(/^\d{1,19}$/),
+  oldUsername: optionalStr(64),
+  newUsername: z.string().trim().min(5).max(32).regex(/^[A-Za-z0-9_]+$/, "must be 5–32 of a–z, 0–9, _"),
+  at: isoAt,
 });
 
 export type AccountStatusEvent = z.input<typeof accountStatusSchema>;
@@ -42,14 +59,40 @@ export async function recordAccountStatus(raw: unknown): Promise<{ ok: true; dat
   if (!parsed.success) return { ok: false, error: formatEventError(parsed.error) };
   const e = parsed.data;
 
-  const input = e.tgAccount.replace(/^@/, "");
-  const account = await db.tgAccount.findFirst({
-    where: { OR: [{ username: input.toLowerCase() }, { id: input }] },
-    select: { id: true, lastSeenAt: true },
-  });
+  const account = await matchTgAccount(db, { tgUserId: e.tgUserId, tgAccount: e.tgAccount });
   if (!account) return { ok: true, data: { recorded: false, reason: "unknown_account" } };
   if (account.lastSeenAt && account.lastSeenAt > e.at) return { ok: true, data: { recorded: false, reason: "stale" } };
 
   await db.tgAccount.update({ where: { id: account.id }, data: { panelStatus: e.status, lastSeenAt: e.at } });
   return { ok: true, data: { recorded: true } };
+}
+
+/**
+ * Apply a username change: move the account's username and t.me link. Matched by numeric id (with a
+ * fallback to the old username), so it works even before the id has been backfilled. The assigned VA's
+ * tracking link and dashboard follow automatically because they key off the account, not the name.
+ */
+export async function renameAccount(raw: unknown): Promise<{ ok: true; data: AccountStatusOutcome } | { ok: false; error: string }> {
+  const parsed = accountRenameSchema.safeParse(raw);
+  if (!parsed.success) return { ok: false, error: formatEventError(parsed.error) };
+  const e = parsed.data;
+
+  const account = await matchTgAccount(db, { tgUserId: e.tgUserId, tgAccount: e.oldUsername ?? null });
+  if (!account) return { ok: true, data: { recorded: false, reason: "unknown_account" } };
+
+  const username = e.newUsername.toLowerCase();
+  if (account.username === username) return { ok: true, data: { recorded: true } };
+  try {
+    await db.tgAccount.update({ where: { id: account.id }, data: { username, link: `https://t.me/${username}` } });
+  } catch (err) {
+    if (isUniqueViolation(err)) return { ok: false, error: `username @${username} is already used by another account` };
+    throw err;
+  }
+  return { ok: true, data: { recorded: true } };
+}
+
+/** Route entry point: a rename event (has `newUsername`) renames; anything else records status. */
+export async function applyAccountEvent(raw: unknown): Promise<{ ok: true; data: AccountStatusOutcome } | { ok: false; error: string }> {
+  if (raw && typeof raw === "object" && "newUsername" in raw) return renameAccount(raw);
+  return recordAccountStatus(raw);
 }

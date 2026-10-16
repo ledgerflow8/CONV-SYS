@@ -1,15 +1,19 @@
 import logging
+import re
+import tempfile
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 
+from panel import portal
 from panel.auth import require_login
 from panel.capital import ALLOWED_OVERRIDE_KEYS
 from panel.db import get_setting
 from panel.health import health_color
-from panel.models import Account, Chat, Profile
+from panel.models import Account, Chat, Profile, utcnow
 from panel.tg.client import TgError
 
 router = APIRouter(prefix="/api/accounts", dependencies=[Depends(require_login)])
@@ -17,6 +21,23 @@ router = APIRouter(prefix="/api/accounts", dependencies=[Depends(require_login)]
 log = logging.getLogger("panel.routes.accounts")
 
 DEFAULT_QUIET_HOURS = 12
+NAME_MAX = 64  # Telegram first/last name limit
+BIO_MAX = 70  # Telegram "about" limit
+USERNAME_RE = re.compile(r"[A-Za-z0-9_]{5,32}")  # 5–32 chars, a–z/0–9/_ (CheckUsername is authoritative)
+PHOTO_TYPES = {"image/jpeg": ".jpg", "image/png": ".png"}
+PHOTO_MAX_BYTES = 10 * 1024 * 1024
+
+
+def _tg_http(e: TgError) -> HTTPException:
+    """Map a Telegram failure to a clear panel HTTP error."""
+    if e.status == "limited":
+        mins = max(1, round((e.retry_after or 60) / 60))
+        return HTTPException(429, f"Telegram is rate-limiting this account — try again in about {mins} min.")
+    if e.status == "username_taken":
+        return HTTPException(409, "That username is already taken.")
+    if e.status == "username_invalid":
+        return HTTPException(400, "That username isn't valid (5–32 characters, a–z, 0–9 and _).")
+    return HTTPException(502, f"Telegram rejected the change: {e.detail}")
 
 
 def _service(request: Request):
@@ -128,6 +149,144 @@ async def patch_account(account_id: int, body: PatchBody, request: Request) -> d
             acc.profile_overrides = {k: v for k, v in (body.profile_overrides or {}).items() if k in ALLOWED_OVERRIDE_KEYS and v is not None}
         await session.commit()
     return {"ok": True}
+
+
+# ── profile editing (name / bio / username / photo) ──────────────────────────
+def _require_connected(service, account_id: int):
+    client = service.manager.get(account_id)
+    if client is None:
+        raise HTTPException(409, "Connect the account first (power it on) to edit its profile.")
+    return client
+
+
+@router.get("/{account_id}/profile")
+async def get_profile(account_id: int, request: Request) -> dict:
+    """Read the current profile live from Telegram, to prefill the edit form."""
+    service = _service(request)
+    async with service.sessionmaker() as session:
+        if not await session.get(Account, account_id):
+            raise HTTPException(404, "No such account")
+    client = _require_connected(service, account_id)
+    try:
+        prof = await client.get_profile()
+    except TgError as e:
+        raise _tg_http(e) from e
+    return {"first_name": prof.first_name, "last_name": prof.last_name, "bio": prof.about, "username": prof.username}
+
+
+class UsernameBody(BaseModel):
+    username: str
+
+
+@router.post("/{account_id}/username-check")
+async def username_check(account_id: int, body: UsernameBody, request: Request) -> dict:
+    """Live availability check for the form. Returns {available, reason: taken|invalid|null}."""
+    service = _service(request)
+    async with service.sessionmaker() as session:
+        acc = await session.get(Account, account_id)
+        if not acc:
+            raise HTTPException(404, "No such account")
+        current = acc.username
+    wanted = body.username.strip().lstrip("@")
+    if current and wanted.lower() == current.lower():
+        return {"available": True, "reason": None}  # unchanged
+    if not USERNAME_RE.fullmatch(wanted):
+        return {"available": False, "reason": "invalid"}
+    client = _require_connected(service, account_id)
+    try:
+        ok = await client.check_username(wanted)
+    except TgError as e:
+        if e.status == "username_invalid":
+            return {"available": False, "reason": "invalid"}
+        raise _tg_http(e) from e
+    return {"available": ok, "reason": None if ok else "taken"}
+
+
+@router.post("/{account_id}/profile")
+async def edit_profile(
+    account_id: int,
+    request: Request,
+    first_name: str = Form(""),
+    last_name: str = Form(""),
+    bio: str = Form(""),
+    username: str = Form(""),
+    remove_photo: bool = Form(False),
+    photo: UploadFile | None = File(None),
+) -> dict:
+    service = _service(request)
+    async with service.sessionmaker() as session:
+        acc = await session.get(Account, account_id)
+        if not acc:
+            raise HTTPException(404, "No such account")
+        current_username = acc.username
+    client = _require_connected(service, account_id)
+
+    first_name, last_name, bio = first_name.strip()[:NAME_MAX], last_name.strip()[:NAME_MAX], bio.strip()[:BIO_MAX]
+    wanted = username.strip().lstrip("@")
+    username_changed = bool(wanted) and wanted.lower() != (current_username or "").lower()
+    if username_changed and not USERNAME_RE.fullmatch(wanted):
+        raise HTTPException(400, "That username isn't valid (5–32 characters, a–z, 0–9 and _).")
+
+    # Read the fan's photo bytes before any Telegram call, so a bad upload fails early.
+    photo_path: Path | None = None
+    tmp: tempfile.NamedTemporaryFile | None = None
+    if photo is not None and not remove_photo:
+        suffix = PHOTO_TYPES.get(photo.content_type or "")
+        if suffix is None:
+            raise HTTPException(400, "The photo must be a JPG or PNG.")
+        data = await photo.read()
+        if len(data) > PHOTO_MAX_BYTES:
+            raise HTTPException(413, "The photo is too large (max 10 MB).")
+        tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+        tmp.write(data)
+        tmp.close()
+        photo_path = Path(tmp.name)
+
+    try:
+        # 1) Availability first (nothing is applied if it's taken/invalid).
+        if username_changed and not await client.check_username(wanted):
+            raise HTTPException(409, "That username is already taken.")
+        # 2) Name + bio.
+        await client.update_profile(first_name, last_name, bio)
+        # 3) Username.
+        if username_changed:
+            await client.set_username(wanted)
+        # 4) Photo.
+        if remove_photo:
+            await client.delete_profile_photo()
+        elif photo_path is not None:
+            await client.set_profile_photo(str(photo_path))
+    except TgError as e:
+        raise _tg_http(e) from e
+    finally:
+        if photo_path is not None:
+            photo_path.unlink(missing_ok=True)
+
+    old_username = current_username
+    async with service.sessionmaker() as session:
+        acc = await session.get(Account, account_id)
+        acc.first_name = first_name or None
+        if username_changed:
+            acc.username = wanted.lower()
+        if remove_photo and acc.avatar_path:
+            Path(acc.avatar_path).unlink(missing_ok=True)
+            acc.avatar_path = None
+        acc.updated_at = utcnow()
+        await service.log_activity(
+            session, "info", "profile_edited", f"@{acc.username or acc.tg_user_id}: profile updated", account_id
+        )
+        if username_changed:
+            await portal.enqueue_account_rename(session, str(acc.tg_user_id), old_username, acc.username, utcnow())
+        await session.commit()
+
+    if (photo is not None and not remove_photo):
+        await service.refresh_avatar(account_id)  # re-download the new photo into the card
+
+    async with service.sessionmaker() as session:
+        acc = await session.get(Account, account_id)
+        quiet = await _quiet_hours(session)
+        card = _card(acc, quiet, service.manager.is_connected(acc.id))
+    return {"ok": True, "username_changed": username_changed, "card": card}
 
 
 class PowerBody(BaseModel):

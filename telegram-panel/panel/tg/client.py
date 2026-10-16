@@ -31,6 +31,16 @@ class AccountInfo:
 
 
 @dataclass(frozen=True)
+class ProfileInfo:
+    """The editable profile, read live from Telegram to prefill the edit form."""
+
+    first_name: str | None
+    last_name: str | None
+    about: str | None  # bio
+    username: str | None  # lowercase, no @
+
+
+@dataclass(frozen=True)
 class PeerInfo:
     peer_id: str  # the fan's Telegram id, as a string
     username: str | None  # lowercase, no @
@@ -70,11 +80,12 @@ class TgError(Exception):
     Telegram actually returned, not just the human message.
     """
 
-    def __init__(self, status: str, detail: str, raw: str | None = None):
+    def __init__(self, status: str, detail: str, raw: str | None = None, retry_after: int | None = None):
         super().__init__(detail)
-        self.status = status  # revoked · banned · limited · error
+        self.status = status  # revoked · banned · limited · error · username_taken · username_invalid
         self.detail = detail
         self.raw = raw
+        self.retry_after = retry_after  # seconds Telegram asked us to wait (FloodWait only)
 
     @property
     def dead(self) -> bool:
@@ -96,7 +107,7 @@ def classify(e: BaseException) -> TgError:
     if isinstance(e, (errors.UnauthorizedError, errors.AuthKeyError)):
         return TgError("revoked", f"Session isn't authorised ({raw})", raw)
     if isinstance(e, errors.FloodWaitError):
-        return TgError("limited", f"Telegram asked to wait {e.seconds}s", raw)
+        return TgError("limited", f"Telegram asked to wait {e.seconds}s", raw, retry_after=e.seconds)
     if isinstance(e, (asyncio.TimeoutError, ConnectionError, OSError)):
         return TgError("error", "Couldn't reach Telegram", raw)
     return TgError("error", f"{type(e).__name__}: {e}"[:300], raw)
@@ -121,6 +132,13 @@ class TgClient(Protocol):
     async def mark_read(self, peer_id: int) -> None: ...
     async def typing(self, peer_id: int, seconds: float) -> None: ...
     async def download_message_media(self, peer_id: int, tg_msg_id: int, dest_dir: Path) -> Path | None: ...
+    # Profile editing (uses this same connection; never opens a second one).
+    async def get_profile(self) -> ProfileInfo: ...
+    async def check_username(self, username: str) -> bool: ...
+    async def update_profile(self, first_name: str, last_name: str, about: str) -> None: ...
+    async def set_username(self, username: str) -> None: ...
+    async def set_profile_photo(self, path: str) -> None: ...
+    async def delete_profile_photo(self) -> None: ...
 
 
 ClientFactory = Callable[[ConnectParams], TgClient]
@@ -296,6 +314,69 @@ class TelethonClient:
         dest_dir.mkdir(parents=True, exist_ok=True)
         got = await msg.download_media(file=str(dest_dir) + "/")
         return Path(got) if got else None
+
+    # ── profile editing (uses this same live connection) ──────────────────────
+    async def get_profile(self) -> ProfileInfo:
+        try:
+            me = await self._c.get_me()
+            full = await self._c(functions.users.GetFullUserRequest(types.InputUserSelf()))
+            about = full.full_user.about
+        except Exception as e:
+            raise classify(e) from e
+        username = me.username
+        if not username and getattr(me, "usernames", None):
+            username = next((u.username for u in me.usernames if u.active), None)
+        return ProfileInfo(
+            first_name=me.first_name,
+            last_name=me.last_name,
+            about=about,
+            username=username.lower() if username else None,
+        )
+
+    async def check_username(self, username: str) -> bool:
+        """True if the username is free for this account. Invalid usernames raise username_invalid."""
+        try:
+            return bool(await self._c(functions.account.CheckUsernameRequest(username)))
+        except errors.UsernameInvalidError as e:
+            raise TgError("username_invalid", "That username isn't valid.", type(e).__name__) from e
+        except Exception as e:
+            raise classify(e) from e
+
+    async def update_profile(self, first_name: str, last_name: str, about: str) -> None:
+        try:
+            await self._c(functions.account.UpdateProfileRequest(first_name=first_name, last_name=last_name, about=about))
+        except Exception as e:
+            raise classify(e) from e
+
+    async def set_username(self, username: str) -> None:
+        try:
+            await self._c(functions.account.UpdateUsernameRequest(username))
+        except errors.UsernameOccupiedError as e:
+            raise TgError("username_taken", "That username is already taken.", type(e).__name__) from e
+        except (errors.UsernameInvalidError, errors.UsernameNotModifiedError) as e:
+            raise TgError("username_invalid", "That username isn't valid.", type(e).__name__) from e
+        except Exception as e:
+            raise classify(e) from e
+
+    async def set_profile_photo(self, path: str) -> None:
+        try:
+            uploaded = await self._c.upload_file(path)
+            await self._c(functions.photos.UploadProfilePhotoRequest(file=uploaded))
+        except Exception as e:
+            raise classify(e) from e
+
+    async def delete_profile_photo(self) -> None:
+        try:
+            photos = await self._c.get_profile_photos("me", limit=1)
+            if photos:
+                p = photos[0]
+                await self._c(
+                    functions.photos.DeletePhotosRequest(
+                        [types.InputPhoto(id=p.id, access_hash=p.access_hash, file_reference=p.file_reference)]
+                    )
+                )
+        except Exception as e:
+            raise classify(e) from e
 
     def on_private_message(self, cb: MessageCallback) -> None:
         async def handler(event: events.NewMessage.Event) -> None:

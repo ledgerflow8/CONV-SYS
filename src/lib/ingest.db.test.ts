@@ -235,3 +235,42 @@ describe("concurrency", () => {
     expect(await db.auditLog.count({ where: { action: "convo.status" } })).toBe(1);
   });
 });
+
+describe("ingestConvoEvent: matches the account by numeric id across a rename", () => {
+  it("attributes a convo to the same account after its username changed", async () => {
+    const t = await makeTeam();
+    await db.tgAccount.update({ where: { id: t.account.id }, data: { tgUserId: BigInt(4242) } });
+
+    // The panel renamed the account; the portal stored the new username.
+    await db.tgAccount.update({ where: { id: t.account.id }, data: { username: "renamedacct", link: "https://t.me/renamedacct" } });
+
+    // A convo event arrives carrying the numeric id and the NEW username.
+    await ingest({
+      tgAccount: "renamedacct",
+      tgUserId: "4242",
+      peerId: "p1",
+      peerPhone: "+14155550100",
+      firstMsgAt: minutesAgo(20).toISOString(),
+      repliedAt: minutesAgo(2).toISOString(),
+    });
+
+    const convo = await db.convo.findFirstOrThrow({ where: { peerId: "p1" } });
+    expect(convo.tgAccountId).toBe(t.account.id); // same account, matched by id
+  });
+
+  it("matches by numeric id even when the event's username is stale (not yet renamed in portal)", async () => {
+    const t = await makeTeam();
+    await db.tgAccount.update({ where: { id: t.account.id }, data: { tgUserId: BigInt(4343), username: "currentname", link: "https://t.me/currentname" } });
+
+    await ingest({
+      tgAccount: "a-username-the-portal-never-had",
+      tgUserId: "4343",
+      peerId: "p2",
+      firstMsgAt: minutesAgo(20).toISOString(),
+      repliedAt: minutesAgo(2).toISOString(),
+    });
+
+    const convo = await db.convo.findFirstOrThrow({ where: { peerId: "p2" } });
+    expect(convo.tgAccountId).toBe(t.account.id);
+  });
+});

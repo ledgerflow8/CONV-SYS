@@ -10,6 +10,7 @@ import { isBlockedDomain, normalizeDomain } from "@/lib/clicks";
 import { countryFromPhone, decide, isFinal } from "@/lib/qualify";
 import { getAllSettings } from "@/lib/settings";
 import type { Settings } from "@/lib/settings-defaults";
+import { matchTgAccount } from "@/lib/match-account";
 import { weekBounds, weekFor } from "@/lib/weeks";
 
 // ── Input ─────────────────────────────────────────────────────────────────
@@ -34,6 +35,7 @@ const optional = <T extends z.ZodTypeAny>(s: T) =>
 export const convoEventSchema = z
   .object({
     tgAccount: z.string().trim().min(1).max(64),
+    tgUserId: optional(z.string().trim().regex(/^\d{1,19}$/)),
     peerId: z.string().trim().min(1).max(64),
     peerPhone: optional(z.string().trim().max(32)),
     firstMsgAt: isoDate,
@@ -154,12 +156,10 @@ async function ingestOnce(
 ): Promise<IngestOutcome> {
   const actorId = ctx.actorId ?? null;
 
-  // 1. Find the account (by username, or by id).
+  // 1. Find the account by its stable numeric id (falling back to username/id), so a convo still
+  //    lands on the right account right after a username change.
   const input = e.tgAccount.replace(/^@/, "");
-  const account = await tx.tgAccount.findFirst({
-    where: { OR: [{ username: input.toLowerCase() }, { id: input }] },
-    select: { id: true, username: true, modelId: true },
-  });
+  const account = await matchTgAccount(tx, { tgUserId: e.tgUserId, tgAccount: e.tgAccount });
   const accountRef = account?.username ?? input.toLowerCase();
 
   // 3 (early). Lock the existing row for this person on this account, if any.

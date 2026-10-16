@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from panel.tg.client import AccountInfo, ConnectParams, IncomingMessage, TgError
+from panel.tg.client import AccountInfo, ConnectParams, IncomingMessage, ProfileInfo, TgError
 
 
 @dataclass
@@ -23,6 +23,10 @@ class FakeAccount:
     dialog_firsts: dict[str, tuple[datetime | None, datetime | None]] = field(default_factory=dict)
     # fan media available to download_message_media(), keyed by (peer_id str, tg_msg_id) → bytes.
     media: dict[tuple[str, int], bytes] = field(default_factory=dict)
+    # profile editing
+    last_name: str | None = None
+    about: str | None = None
+    username_floodwait: int | None = None  # when set, check_username raises a FloodWait (limited)
 
 
 class FakeClient:
@@ -35,6 +39,10 @@ class FakeClient:
         self.sent: list[dict] = []  # what the AI worker sent through this client
         self.read_marked = 0
         self._next_id = 10_000
+        self.profile_update: dict | None = None  # last update_profile(first, last, about)
+        self.username_set: str | None = None
+        self.photo_set: str | None = None
+        self.photo_deleted = False
 
     async def start(self) -> AccountInfo:
         self._dir.started.append(self._params.session)
@@ -99,6 +107,36 @@ class FakeClient:
         p.write_bytes(data)
         return p
 
+    # ── profile editing ────────────────────────────────────────────────────────
+    async def get_profile(self) -> ProfileInfo:
+        info = self._fake.info
+        return ProfileInfo(first_name=info.first_name, last_name=self._fake.last_name, about=self._fake.about, username=info.username)
+
+    async def check_username(self, username: str) -> bool:
+        if self._fake and self._fake.username_floodwait:
+            raise TgError("limited", f"Telegram asked to wait {self._fake.username_floodwait}s", "FloodWaitError", retry_after=self._fake.username_floodwait)
+        return username.lower() not in self._dir.taken_usernames
+
+    async def update_profile(self, first_name: str, last_name: str, about: str) -> None:
+        self.profile_update = {"first_name": first_name, "last_name": last_name, "about": about}
+        if self._fake:
+            self._fake.last_name, self._fake.about = last_name, about
+
+    async def set_username(self, username: str) -> None:
+        if username.lower() in self._dir.taken_usernames:
+            raise TgError("username_taken", "That username is already taken.", "UsernameOccupiedError")
+        self.username_set = username
+
+    async def set_profile_photo(self, path: str) -> None:
+        self.photo_set = path
+        if self._fake:
+            self._fake.has_avatar = True
+
+    async def delete_profile_photo(self) -> None:
+        self.photo_deleted = True
+        if self._fake:
+            self._fake.has_avatar = False
+
     def on_private_message(self, cb) -> None:
         self._cb = cb
 
@@ -113,6 +151,7 @@ class FakeDirectory:
         self.started: list[str] = []
         self.logged_out: list[int] = []
         self.clients: list[FakeClient] = []
+        self.taken_usernames: set[str] = set()  # usernames CheckUsername/UpdateUsername report as taken
 
     def add(self, session: str, fake: FakeAccount) -> None:
         self.by_session[session] = fake

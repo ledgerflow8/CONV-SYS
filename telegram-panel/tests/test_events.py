@@ -85,7 +85,7 @@ def test_incoming_then_reply_makes_first_and_reply_events(client, directory):
     _deliver(client, acc, IncomingMessage(fan(), tg_msg_id=1, out=False, kind="text", text="hi", at=at(9)))
     convo = _convo(_outbox(client))
     assert len(convo) == 1
-    assert convo[0] == {"tgAccount": "alice", "peerId": "555", "peerPhone": "+15557770000", "firstMsgAt": "2026-10-07T09:00:00Z"}
+    assert convo[0] == {"tgAccount": "alice", "tgUserId": "7001", "peerId": "555", "peerPhone": "+15557770000", "firstMsgAt": "2026-10-07T09:00:00Z"}
 
     # Account replies → a "reply" event carrying repliedAt. firstMsgAt is unchanged.
     _deliver(client, acc, IncomingMessage(fan(), tg_msg_id=2, out=True, kind="text", text="hey", at=at(9, 5)))

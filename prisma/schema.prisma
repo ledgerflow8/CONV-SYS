@@ -109,6 +109,7 @@ model TgAccount {
   modelId    String
   model      Model    @relation(fields: [modelId], references: [id])
   username   String   @unique // sophiejetlag
+  tgUserId   BigInt?  @unique // numeric Telegram id: the stable key the panel matches on across renames
   phone      String // +1309...
   link       String // https://t.me/sophiejetlag
   status     TgStatus @default(AVAILABLE)

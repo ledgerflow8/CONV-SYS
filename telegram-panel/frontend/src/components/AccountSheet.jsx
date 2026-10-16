@@ -3,6 +3,7 @@ import { RotateCcw, Trash2 } from "lucide-react";
 import { api } from "../api.js";
 import { ago } from "../time.js";
 import Dialog from "./Dialog.jsx";
+import EditProfile from "./EditProfile.jsx";
 
 const STATE_TONE = {
   active: "text-emerald-600",
@@ -127,6 +128,18 @@ export default function AccountSheet({ accountId, onClose, onChanged }) {
                 })}
               </ul>
             )}
+          </div>
+
+          <div className="border-t pt-4">
+            <EditProfile
+              accountId={accountId}
+              connected={acc.connected}
+              currentUsername={acc.username}
+              onSaved={async () => {
+                await reload();
+                onChanged();
+              }}
+            />
           </div>
 
           {!confirming ? (

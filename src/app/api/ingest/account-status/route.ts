@@ -1,7 +1,8 @@
-// POST /api/ingest/account-status — the Telegram panel reports each account's last-known state.
-// Body: one event, or { "events": [ ... ] } (max 500). Record-only (see src/lib/account-status.ts).
+// POST /api/ingest/account-status — the Telegram panel reports each account's last-known state, and
+// username changes (a rename event carries `newUsername`). Status is record-only; a rename moves the
+// account's username + t.me link. Body: one event, or { "events": [ ... ] } (max 500).
 // Auth: identical to /api/ingest/convo (src/lib/ingest-auth.ts).
-import { recordAccountStatus } from "@/lib/account-status";
+import { applyAccountEvent } from "@/lib/account-status";
 import { verifyIngestRequest } from "@/lib/ingest-auth";
 
 export const runtime = "nodejs";
@@ -38,7 +39,7 @@ export async function POST(req: Request) {
 
   const results = [];
   for (const [index, event] of events.entries()) {
-    const r = await recordAccountStatus(event);
+    const r = await applyAccountEvent(event);
     results.push(r.ok ? { index, ok: true, ...r.data } : { index, ok: false, error: r.error });
   }
   return json(200, batch ? { results } : results[0]);
