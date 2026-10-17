@@ -345,3 +345,13 @@ def test_fan_message_triggers_a_debounced_reply(client, directory):
 
     run(client, _wait)
     assert any(s.get("text") == "auto reply" for s in fake_client(client, acc).sent)
+
+
+# ── overrides are never sent to Capitalbot (client decision 2026-10-17) ──────
+def test_overrides_are_never_sent(client, directory):
+    acc = _import(client, directory, 90, AccountInfo(9100, "nadia", "+1", "A"))
+    enable_ai(client, acc, overrides={"city": "Paris"})
+    set_capital(client, FakeCapital(cresp(texts=["hi"])))
+    deliver(client, acc, IncomingMessage(fan(), tg_msg_id=1, out=False, kind="text", text="hi", at=at(9)))
+    run_turn(client, acc)
+    assert client.app.state.ai.capital.calls[0]["overrides"] is None

@@ -80,7 +80,9 @@ export async function syncCapitalAI(opts: { now?: Date; budgetMs?: number; since
   };
 
   try {
-    const pool = new Map((await db.tgAccount.findMany({ select: { username: true } })).map((a) => [a.username.toLowerCase(), a.username]));
+    const pool = new Map(
+      (await db.tgAccount.findMany({ where: { username: { not: null } }, select: { username: true } })).map((a) => [a.username!.toLowerCase(), a.username!]),
+    );
     const client = capitalAI();
 
     pages: for (let page = 0, hasMore = true; hasMore; page++) {

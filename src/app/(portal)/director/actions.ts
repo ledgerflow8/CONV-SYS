@@ -59,6 +59,23 @@ export async function addPoolAccountAction(input: unknown): Promise<Result<{ id:
   return result;
 }
 
+export async function setAccountModelAction(input: unknown): Promise<Result<null>> {
+  const actor = await requireRole("DIRECTOR");
+  const parsed = z.object({ accountId: id, modelId: id }).safeParse(input);
+  if (!parsed.success) return fail("Pick an account and a model.");
+  const [acc, model] = await Promise.all([
+    db.tgAccount.findUnique({ where: { id: parsed.data.accountId }, select: { id: true } }),
+    db.model.findUnique({ where: { id: parsed.data.modelId }, select: { id: true } }),
+  ]);
+  if (!acc || !model) return fail("Account or model not found.");
+  await db.$transaction(async (tx) => {
+    await tx.tgAccount.update({ where: { id: acc.id }, data: { modelId: model.id } });
+    await audit(tx, { actorId: actor.id, action: "tgaccount.set_model", target: acc.id, meta: { modelId: model.id } });
+  });
+  revalidatePath("/director/pool");
+  return { ok: true, data: null };
+}
+
 export async function importPoolAction(input: unknown): Promise<Result<ImportSummary>> {
   const actor = await requireRole("DIRECTOR");
   const parsed = z.object({ modelId: id, text: z.string().max(200_000) }).safeParse(input);

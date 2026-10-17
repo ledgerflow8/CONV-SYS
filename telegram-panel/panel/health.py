@@ -8,7 +8,9 @@ DEAD = {"banned", "revoked", "error"}
 
 
 def health_color(acc: Account, quiet_after_hours: int, now: datetime | None = None) -> str:
-    """red · grey · amber · green."""
+    """red · purple · grey · amber · green."""
+    if acc.status == "frozen":
+        return "purple"  # frozen/write-restricted: its own state, not dead
     if acc.status in DEAD:
         return "red"
     if not acc.power_on:

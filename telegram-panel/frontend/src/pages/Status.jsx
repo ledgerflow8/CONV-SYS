@@ -3,6 +3,7 @@ import { AlertTriangle, CheckCircle2, RefreshCw } from "lucide-react";
 import { api } from "../api.js";
 import { ago } from "../time.js";
 import Toggle from "../components/Toggle.jsx";
+import { StatsBlock } from "../components/AccountSheet.jsx";
 
 function Stat({ label, value, tone }) {
   return (
@@ -40,6 +41,7 @@ export default function Status() {
   const [status, setStatus] = useState(null);
   const [activity, setActivity] = useState([]);
   const [settings, setSettings] = useState(null);
+  const [stats, setStats] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const timer = useRef(null);
@@ -74,6 +76,8 @@ export default function Status() {
 
   useEffect(() => {
     load();
+    // Stats hit Capitalbot, so fetch once (not on the 10s poll).
+    api("/api/system/stats").then(setStats).catch(() => {});
   }, [load]);
 
   useEffect(() => {
@@ -107,6 +111,20 @@ export default function Status() {
       </header>
 
       {error && <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
+
+      {stats && (
+        <section className="space-y-3 rounded-xl border bg-card p-4">
+          <h2 className="font-medium">Stats (all accounts)</h2>
+          <StatsBlock stats={stats.panel} />
+          {stats.capital && stats.capital.week && (
+            <div className="grid grid-cols-3 gap-2">
+              <Stat label="Capitalbot msgs (7d)" value={stats.capital.week.messages ?? "—"} />
+              <Stat label="New convos (7d)" value={stats.capital.week.newConversations ?? "—"} />
+              <Stat label="Conversions (7d)" value={stats.capital.week.conversionsTotal ?? "—"} />
+            </div>
+          )}
+        </section>
+      )}
 
       <section className="space-y-3 rounded-xl border bg-card p-4">
         <div className="flex items-center justify-between">

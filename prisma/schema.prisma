@@ -106,9 +106,9 @@ model Model {
 
 model TgAccount {
   id         String   @id @default(cuid())
-  modelId    String
-  model      Model    @relation(fields: [modelId], references: [id])
-  username   String   @unique // sophiejetlag
+  modelId    String? // null = unassigned: auto-registered from the panel, awaiting a Director's model pick
+  model      Model?   @relation(fields: [modelId], references: [id])
+  username   String?  @unique // sophiejetlag — null until the account sets one (then it can hold a tracking link)
   tgUserId   BigInt?  @unique // numeric Telegram id: the stable key the panel matches on across renames
   phone      String // +1309...
   link       String // https://t.me/sophiejetlag

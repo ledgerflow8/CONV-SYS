@@ -36,7 +36,10 @@ export async function makeModel() {
 
 export async function makeAccount(modelId: string) {
   const username = uid("acct");
-  return db.tgAccount.create({ data: { modelId, username, phone: "+13095550100", link: `https://t.me/${username}` } });
+  const acc = await db.tgAccount.create({ data: { modelId, username, phone: "+13095550100", link: `https://t.me/${username}` } });
+  // username + modelId are nullable in the schema (auto-registered accounts), but this factory always
+  // sets them — narrow the type so tests keep treating them as strings.
+  return acc as typeof acc & { username: string; modelId: string };
 }
 
 /** Assigns an account to a VA from `startedAt` (default: an hour ago). */

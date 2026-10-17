@@ -17,7 +17,7 @@ from panel.tg.client import AccountInfo, ConnectParams, IncomingMessage, TgError
 
 # Internal account status → the portal's account_status enum (PLAN.md §4.4).
 # connecting is transient and never reported; error is reported as offline.
-_PORTAL_STATUS = {"online": "online", "offline": "offline", "limited": "limited", "banned": "banned", "revoked": "revoked", "error": "offline"}
+_PORTAL_STATUS = {"online": "online", "offline": "offline", "limited": "limited", "banned": "banned", "revoked": "revoked", "frozen": "frozen", "error": "offline"}
 
 
 def _later(a: datetime | None, b: datetime | None) -> datetime | None:
@@ -205,6 +205,11 @@ class Service:
         tg_account = acc.username or str(acc.tg_user_id)
         await portal.enqueue_account_status(session, tg_account, str(acc.tg_user_id), portal_status, utcnow(), acc.status_detail)
 
+    async def _enqueue_register(self, session: AsyncSession, acc: Account) -> None:
+        """Register/refresh this account in the portal's pool, keyed by Telegram id (arrives unassigned)."""
+        link = f"https://t.me/{acc.username}" if acc.username else None
+        await portal.enqueue_account_register(session, str(acc.tg_user_id), acc.username, acc.phone, link)
+
     async def _on_drop(self, account_id: int, err: TgError | None) -> None:
         """Called by AccountManager when a live connection drops on its own (ban, revoke, network)."""
         async with self.sessionmaker() as session:
@@ -278,6 +283,7 @@ class Service:
                 acc.updated_at = utcnow()
                 if acc.status != old:
                     await self._enqueue_status(session, acc)
+                await self._enqueue_register(session, acc)  # keep the portal pool in sync with identity
                 await session.commit()
 
     async def _mark_status(self, account_id: int, status: str, detail: str | None, power_off: bool = False) -> None:

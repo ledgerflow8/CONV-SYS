@@ -27,9 +27,24 @@ const tgUserId = z.preprocess((v) => (v === "" || v === null ? undefined : v), z
 export const accountStatusSchema = z.object({
   tgAccount: z.string().trim().min(1).max(64),
   tgUserId,
-  status: z.enum(["online", "offline", "limited", "banned", "revoked"]),
+  status: z.enum(["online", "offline", "limited", "banned", "revoked", "frozen"]),
   at: isoAt,
   detail: optionalStr(500),
+});
+
+// Auto-sync of the panel's accounts into the portal pool (keyed by numeric id). A registered account
+// arrives unassigned (no model) until a Director picks one; a retired account is removed from service.
+export const accountRegisterSchema = z.object({
+  action: z.literal("register"),
+  tgUserId: z.string().trim().regex(/^\d{1,19}$/),
+  username: z.preprocess((v) => (v === "" ? null : v), z.string().trim().max(64).nullable().optional()),
+  phone: optionalStr(32),
+  link: optionalStr(255),
+});
+
+export const accountRetireSchema = z.object({
+  action: z.literal("retire"),
+  tgUserId: z.string().trim().regex(/^\d{1,19}$/),
 });
 
 // A username change reported by the panel: the portal moves the account's username + t.me link so the
@@ -91,8 +106,59 @@ export async function renameAccount(raw: unknown): Promise<{ ok: true; data: Acc
   return { ok: true, data: { recorded: true } };
 }
 
-/** Route entry point: a rename event (has `newUsername`) renames; anything else records status. */
+/**
+ * Register (create or refresh) an account in the pool, keyed by numeric id. New accounts arrive
+ * UNASSIGNED (no model); a Director sets the model later. Username/phone/link are kept current. A new
+ * account is AVAILABLE, but it's only actually claimable once it has BOTH a model and a username
+ * (claimAvailableAccount enforces that) — so a no-username account stays effectively out of the pool.
+ * Never touches the model, status or holder of an account that already exists.
+ */
+export async function registerAccount(raw: unknown): Promise<{ ok: true; data: AccountStatusOutcome } | { ok: false; error: string }> {
+  const parsed = accountRegisterSchema.safeParse(raw);
+  if (!parsed.success) return { ok: false, error: formatEventError(parsed.error) };
+  const e = parsed.data;
+  const tgUserId = BigInt(e.tgUserId);
+  const username = e.username ? e.username.replace(/^@/, "").toLowerCase() : null;
+
+  const existing = await db.tgAccount.findFirst({
+    where: { OR: [{ tgUserId }, ...(username ? [{ username }] : [])] },
+    select: { id: true },
+  });
+  try {
+    if (existing) {
+      await db.tgAccount.update({ where: { id: existing.id }, data: { tgUserId, username, phone: e.phone, link: e.link } });
+    } else {
+      await db.tgAccount.create({
+        data: { tgUserId, username, phone: e.phone ?? "", link: e.link ?? "", status: "AVAILABLE" },
+      });
+    }
+  } catch (err) {
+    if (isUniqueViolation(err)) return { ok: false, error: "account conflicts with an existing username/id" };
+    throw err;
+  }
+  return { ok: true, data: { recorded: true } };
+}
+
+/** Retire an account removed from the panel: mark RETIRED and release any holder. */
+export async function retireAccount(raw: unknown): Promise<{ ok: true; data: AccountStatusOutcome } | { ok: false; error: string }> {
+  const parsed = accountRetireSchema.safeParse(raw);
+  if (!parsed.success) return { ok: false, error: formatEventError(parsed.error) };
+  const account = await matchTgAccount(db, { tgUserId: parsed.data.tgUserId });
+  if (!account) return { ok: true, data: { recorded: false, reason: "unknown_account" } };
+  await db.$transaction(async (tx) => {
+    await tx.tgAssignment.updateMany({ where: { tgAccountId: account.id, endedAt: null }, data: { endedAt: new Date(), endReason: "retired" } });
+    await tx.tgAccount.update({ where: { id: account.id }, data: { status: "RETIRED", vaId: null } });
+  });
+  return { ok: true, data: { recorded: true } };
+}
+
+/** Route entry point: dispatch by shape — register / retire (action), rename (newUsername), else status. */
 export async function applyAccountEvent(raw: unknown): Promise<{ ok: true; data: AccountStatusOutcome } | { ok: false; error: string }> {
-  if (raw && typeof raw === "object" && "newUsername" in raw) return renameAccount(raw);
+  if (raw && typeof raw === "object") {
+    const action = (raw as { action?: unknown }).action;
+    if (action === "register") return registerAccount(raw);
+    if (action === "retire") return retireAccount(raw);
+    if ("newUsername" in raw) return renameAccount(raw);
+  }
   return recordAccountStatus(raw);
 }

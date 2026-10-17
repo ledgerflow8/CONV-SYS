@@ -21,7 +21,7 @@ class Abort extends Error {}
 export async function claimAvailableAccount(tx: Prisma.TransactionClient, modelId: string) {
   const rows = await tx.$queryRaw<{ id: string; username: string }[]>`
     SELECT id, username FROM "TgAccount"
-    WHERE "modelId" = ${modelId} AND status = 'AVAILABLE'
+    WHERE "modelId" = ${modelId} AND status = 'AVAILABLE' AND username IS NOT NULL
     ORDER BY "createdAt", username
     LIMIT 1
     FOR UPDATE SKIP LOCKED`;

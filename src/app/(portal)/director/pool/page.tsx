@@ -7,7 +7,7 @@ import { requireRole } from "@/lib/auth/session";
 import { db } from "@/lib/db";
 import { scopeFor } from "@/lib/scope";
 import { cn } from "@/lib/utils";
-import { AccountActions, AddAccountDialog, ImportAccountsDialog } from "./pool-controls";
+import { AccountActions, AddAccountDialog, ImportAccountsDialog, SetModel } from "./pool-controls";
 import { getSetting } from "@/lib/settings";
 import { formatDateTime } from "@/lib/time";
 
@@ -153,11 +153,15 @@ export default async function PoolPage({
             <li key={a.id} className="space-y-2 px-4 py-3">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
-                  <a href={a.link} target="_blank" rel="noopener noreferrer" className="font-medium hover:underline">
-                    @{a.username}
-                  </a>
+                  {a.username ? (
+                    <a href={a.link} target="_blank" rel="noopener noreferrer" className="font-medium hover:underline">
+                      @{a.username}
+                    </a>
+                  ) : (
+                    <span className="font-medium text-amber-600">No username — set one in the panel</span>
+                  )}
                   <p className="truncate text-xs text-muted-foreground">
-                    {a.model.name} · {a.phone}
+                    {a.model?.name ?? "Unassigned"} · {a.phone}
                     {a.va && ` · held by @${a.va.username}`}
                   </p>
                   {a.panelStatus && (
@@ -194,6 +198,7 @@ export default async function PoolPage({
                 ) : (
                   <span className="text-xs text-muted-foreground">Never assigned</span>
                 )}
+                {a.model ? null : <SetModel accountId={a.id} models={activeModels} />}
                 <AccountActions accountId={a.id} username={a.username} status={a.status} holder={a.va?.username ?? null} />
               </div>
             </li>

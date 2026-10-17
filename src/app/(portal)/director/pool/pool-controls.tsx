@@ -17,7 +17,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import type { ImportSummary } from "@/lib/pool";
-import { addPoolAccountAction, importPoolAction, restoreAccountAction, takeAccountOutOfServiceAction } from "../actions";
+import { addPoolAccountAction, importPoolAction, restoreAccountAction, setAccountModelAction, takeAccountOutOfServiceAction } from "../actions";
 
 type ModelOption = { id: string; name: string };
 
@@ -239,6 +239,42 @@ const NOTIFY_TEXT: Record<string, string> = {
   failed: "the Telegram message failed, so tell them yourself",
 };
 
+// Assign a portal Model to an auto-registered (unassigned) account.
+export function SetModel({ accountId, models }: { accountId: string; models: ModelOption[] }) {
+  const [modelId, setModelId] = useState("");
+  const [msg, setMsg] = useState<string | null>(null);
+  const [pending, startTransition] = useTransition();
+  return (
+    <span className="flex flex-wrap items-center gap-1 text-xs">
+      {msg && <span className="text-muted-foreground">{msg}</span>}
+      <select
+        aria-label="Assign model"
+        value={modelId}
+        onChange={(e) => setModelId(e.target.value)}
+        className="h-8 rounded border bg-background px-2 text-xs"
+      >
+        <option value="">Assign model…</option>
+        {models.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.name}
+          </option>
+        ))}
+      </select>
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={pending || !modelId}
+        onClick={() => startTransition(async () => {
+          const r = await setAccountModelAction({ accountId, modelId });
+          setMsg(r.ok ? "Model set." : r.error);
+        })}
+      >
+        {pending ? "…" : "Set"}
+      </Button>
+    </span>
+  );
+}
+
 export function AccountActions({
   accountId,
   username,
@@ -246,7 +282,7 @@ export function AccountActions({
   holder,
 }: {
   accountId: string;
-  username: string;
+  username: string | null;
   status: string;
   holder: string | null;
 }) {

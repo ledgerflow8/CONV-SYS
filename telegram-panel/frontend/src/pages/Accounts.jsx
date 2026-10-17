@@ -9,6 +9,7 @@ const CHIPS = [
   { key: "all", label: "All" },
   { key: "green", label: "Active", dot: "bg-emerald-500" },
   { key: "amber", label: "Quiet", dot: "bg-amber-500" },
+  { key: "purple", label: "Frozen", dot: "bg-purple-500" },
   { key: "red", label: "Dead", dot: "bg-red-500" },
   { key: "grey", label: "Off", dot: "bg-muted-foreground/50" },
 ];

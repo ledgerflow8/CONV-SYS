@@ -15,7 +15,7 @@ export type Welcome = {
   username: string;
   password: string;
   model: string;
-  account: { username: string; phone: string; link: string } | null;
+  account: { username: string | null; phone: string; link: string } | null;
   trackingUrl: string | null;
   loginUrl: string;
 };
@@ -29,7 +29,7 @@ export function welcomeMessage(w: Welcome): string {
     `📱 Assigned model: ${w.model}`,
   ];
   if (w.account) {
-    lines.push(`   TG username: @${w.account.username}`, `   Phone: ${w.account.phone}`, `   Link: ${w.account.link}`);
+    lines.push(`   TG username: ${w.account.username ? `@${w.account.username}` : "(none yet)"}`, `   Phone: ${w.account.phone}`, `   Link: ${w.account.link}`);
   } else {
     lines.push("   No Telegram account assigned yet. Your Lead VA will sort this out.");
   }

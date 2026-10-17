@@ -108,6 +108,10 @@ def classify(e: BaseException) -> TgError:
         return TgError("revoked", f"Session isn't authorised ({raw})", raw)
     if isinstance(e, errors.FloodWaitError):
         return TgError("limited", f"Telegram asked to wait {e.seconds}s", raw, retry_after=e.seconds)
+    # Frozen: Telegram froze the account or write-restricted it (distinct from a hard ban).
+    _frozen = tuple(t for t in (getattr(errors, n, None) for n in ("UserRestrictedError", "PeerFloodError", "FrozenError", "FrozenMethodInvalidError")) if isinstance(t, type))
+    if "FROZEN" in f"{raw} {e}".upper() or (_frozen and isinstance(e, _frozen)):
+        return TgError("frozen", "Account is frozen or write-restricted by Telegram", raw)
     if isinstance(e, (asyncio.TimeoutError, ConnectionError, OSError)):
         return TgError("error", "Couldn't reach Telegram", raw)
     return TgError("error", f"{type(e).__name__}: {e}"[:300], raw)
@@ -366,15 +370,13 @@ class TelethonClient:
             raise classify(e) from e
 
     async def delete_profile_photo(self) -> None:
+        # Delete ALL profile photos, not just the latest — otherwise Telegram promotes the previous one
+        # and the avatar appears unchanged ("Remove photo did nothing").
         try:
-            photos = await self._c.get_profile_photos("me", limit=1)
-            if photos:
-                p = photos[0]
-                await self._c(
-                    functions.photos.DeletePhotosRequest(
-                        [types.InputPhoto(id=p.id, access_hash=p.access_hash, file_reference=p.file_reference)]
-                    )
-                )
+            photos = await self._c.get_profile_photos("me", limit=100)
+            inputs = [types.InputPhoto(id=p.id, access_hash=p.access_hash, file_reference=p.file_reference) for p in photos]
+            if inputs:
+                await self._c(functions.photos.DeletePhotosRequest(inputs))
         except Exception as e:
             raise classify(e) from e
 

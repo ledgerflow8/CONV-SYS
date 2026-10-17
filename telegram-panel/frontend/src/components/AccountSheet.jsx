@@ -14,7 +14,9 @@ const STATE_TONE = {
 
 export default function AccountSheet({ accountId, onClose, onChanged }) {
   const [acc, setAcc] = useState(null);
-  const [profiles, setProfiles] = useState([]);
+  const [catalog, setCatalog] = useState(null); // { configured, models, presets }
+  const [stats, setStats] = useState(null);
+  const [modelId, setModelId] = useState("");
   const [error, setError] = useState("");
   const [confirming, setConfirming] = useState(false);
   const [confirm, setConfirm] = useState("");
@@ -22,18 +24,35 @@ export default function AccountSheet({ accountId, onClose, onChanged }) {
 
   const reload = () =>
     api(`/api/accounts/${accountId}`)
-      .then(setAcc)
+      .then((a) => {
+        setAcc(a);
+        setModelId((m) => m || (a.capital_model_id != null ? String(a.capital_model_id) : ""));
+      })
       .catch((e) => setError(e.message));
 
   useEffect(() => {
     reload();
-    api("/api/profiles").then((p) => setProfiles(p.profiles)).catch(() => {});
+    api("/api/capital/catalog").then(setCatalog).catch(() => {});
+    api(`/api/accounts/${accountId}/stats`).then(setStats).catch(() => {});
   }, [accountId]);
 
-  const setPersona = async (value) => {
+  // Auto-pick the only model, so the user just picks a preset.
+  useEffect(() => {
+    if (catalog?.models?.length === 1) setModelId((m) => m || String(catalog.models[0].id));
+  }, [catalog]);
+
+  const setPreset = async (presetId) => {
     setError("");
     try {
-      await api(`/api/accounts/${accountId}`, { method: "PATCH", body: { profile_id: value ? Number(value) : null } });
+      if (!presetId) {
+        await api(`/api/accounts/${accountId}`, { method: "PATCH", body: { profile_id: null } });
+      } else {
+        const preset = catalog?.presets?.find((p) => String(p.id) === String(presetId));
+        await api(`/api/accounts/${accountId}/preset`, {
+          method: "POST",
+          body: { model_id: Number(modelId), preset_id: Number(presetId), name: preset?.name ?? null },
+        });
+      }
       await reload();
       onChanged();
     } catch (e) {
@@ -72,6 +91,12 @@ export default function AccountSheet({ accountId, onClose, onChanged }) {
       {error && <p className="text-sm text-destructive">{error}</p>}
       {acc && (
         <div className="max-h-[75vh] space-y-4 overflow-y-auto pr-1 text-sm">
+          {!acc.has_username && (
+            <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs font-medium text-amber-700">
+              No username — set one in Edit profile. Needed for the portal tracking link; until then it stays out of the pool.
+            </p>
+          )}
+
           <dl className="space-y-1">
             <Row k="Status" v={acc.status_detail || acc.status} />
             <Row k="Phone" v={acc.phone || "—"} />
@@ -81,20 +106,42 @@ export default function AccountSheet({ accountId, onClose, onChanged }) {
             <Row k="AI chat" v={acc.ai_on ? "on" : "off"} />
           </dl>
 
-          <label className="block space-y-1">
-            <span className="text-xs text-muted-foreground">Persona</span>
-            <select
-              value={acc.profile_id ?? ""}
-              onChange={(e) => setPersona(e.target.value)}
-              className="h-10 w-full rounded-lg border bg-background px-3 outline-none focus:ring-2 focus:ring-ring"
-            >
-              <option value="">No persona</option>
-              {profiles.map((p) => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
-            {!acc.profile_id && <span className="text-xs text-muted-foreground">AI chat stays off until a persona is picked.</span>}
-          </label>
+          {/* AI preset (replaces the old persona step) */}
+          <div className="space-y-1">
+            <span className="text-xs text-muted-foreground">AI preset</span>
+            {catalog && !catalog.configured ? (
+              <p className="text-xs text-muted-foreground">Set CAPITAL_LICENSE_KEY to list presets.</p>
+            ) : (
+              <>
+                {catalog && catalog.models.length > 1 && (
+                  <select
+                    value={modelId}
+                    onChange={(e) => setModelId(e.target.value)}
+                    className="mb-2 h-10 w-full rounded-lg border bg-background px-3 outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    <option value="">Pick a model…</option>
+                    {catalog.models.map((m) => (
+                      <option key={m.id} value={m.id}>{m.name}</option>
+                    ))}
+                  </select>
+                )}
+                <select
+                  value={acc.capital_preset_id ?? ""}
+                  disabled={!modelId}
+                  onChange={(e) => setPreset(e.target.value)}
+                  className="h-10 w-full rounded-lg border bg-background px-3 outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
+                >
+                  <option value="">No preset (AI off)</option>
+                  {(catalog?.presets ?? []).map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+                {!acc.profile_id && <span className="text-xs text-muted-foreground">Pick a preset to switch AI on.</span>}
+              </>
+            )}
+          </div>
+
+          {stats && <StatsBlock stats={stats} />}
 
           <div className="space-y-2">
             <h3 className="text-xs font-medium text-muted-foreground">Recent chats</h3>
@@ -187,6 +234,47 @@ function Row({ k, v }) {
     <div className="flex justify-between gap-4">
       <dt className="text-muted-foreground">{k}</dt>
       <dd className="truncate text-right">{v}</dd>
+    </div>
+  );
+}
+
+const PERIODS = [
+  ["today", "Today"],
+  ["week", "This week"],
+  ["all", "All time"],
+];
+const METRICS = [
+  ["new_chats", "New chats"],
+  ["ai_replies", "AI replies"],
+  ["convos_reported", "Convos reported"],
+];
+
+export function StatsBlock({ stats }) {
+  return (
+    <div className="space-y-2">
+      <h3 className="text-xs font-medium text-muted-foreground">Stats</h3>
+      <div className="overflow-hidden rounded-lg border">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="bg-muted/50 text-muted-foreground">
+              <th className="px-2 py-1.5 text-left font-medium"> </th>
+              {PERIODS.map(([k, label]) => (
+                <th key={k} className="px-2 py-1.5 text-right font-medium">{label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {METRICS.map(([key, label]) => (
+              <tr key={key} className="border-t">
+                <td className="px-2 py-1.5 text-muted-foreground">{label}</td>
+                {PERIODS.map(([p]) => (
+                  <td key={p} className="px-2 py-1.5 text-right tabular-nums">{stats[p]?.[key] ?? 0}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

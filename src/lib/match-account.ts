@@ -11,8 +11,8 @@ const SELECT = { id: true, username: true, modelId: true, tgUserId: true, lastSe
 
 export type MatchedAccount = {
   id: string;
-  username: string;
-  modelId: string;
+  username: string | null;
+  modelId: string | null;
   tgUserId: bigint | null;
   lastSeenAt: Date | null;
 };

@@ -4,7 +4,7 @@ import { api } from "../api.js";
 import { ago } from "../time.js";
 import Toggle from "./Toggle.jsx";
 
-const BORDER = { green: "border-l-emerald-500", amber: "border-l-amber-500", red: "border-l-red-500", grey: "border-l-muted-foreground/40" };
+const BORDER = { green: "border-l-emerald-500", amber: "border-l-amber-500", purple: "border-l-purple-500", red: "border-l-red-500", grey: "border-l-muted-foreground/40" };
 
 export default function AccountCard({ account, onChanged, onOpen }) {
   const [busy, setBusy] = useState(false);

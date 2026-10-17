@@ -62,6 +62,7 @@ def _card(acc: Account, quiet_hours: int, connected: bool, in_portal: bool | Non
         "connected": connected,
         "ai_on": acc.ai_on,
         "profile_id": acc.profile_id,
+        "has_username": bool(acc.username),  # no username → can't be a tracking-link account in the portal
         "has_avatar": bool(acc.avatar_path),
         "last_msg_at": acc.last_msg_at.isoformat() if acc.last_msg_at else None,
         "last_incoming_at": acc.last_incoming_at.isoformat() if acc.last_incoming_at else None,
@@ -81,7 +82,7 @@ async def list_accounts(request: Request, q: str | None = None) -> dict:
         accounts = (await session.scalars(stmt)).all()
         cards = [_card(a, quiet, service.manager.is_connected(a.id)) for a in accounts]
 
-    counts = {"all": len(cards), "green": 0, "amber": 0, "red": 0, "grey": 0}
+    counts = {"all": len(cards), "green": 0, "amber": 0, "red": 0, "grey": 0, "purple": 0}
     for c in cards:
         counts[c["color"]] += 1
     return {"accounts": cards, "counts": counts}
@@ -97,9 +98,12 @@ async def get_account(account_id: int, request: Request) -> dict:
         quiet = await _quiet_hours(session)
         card = _card(acc, quiet, service.manager.is_connected(acc.id))
         card["profile_overrides"] = acc.profile_overrides or {}
+        card["capital_model_id"] = card["capital_preset_id"] = None
         if acc.profile_id is not None:
             prof = await session.get(Profile, acc.profile_id)
             card["profile_name"] = prof.name if prof else None
+            if prof:
+                card["capital_model_id"], card["capital_preset_id"] = prof.capital_model_id, prof.capital_preset_id
         else:
             card["profile_name"] = None
         chats = (
@@ -149,6 +153,84 @@ async def patch_account(account_id: int, body: PatchBody, request: Request) -> d
             acc.profile_overrides = {k: v for k, v in (body.profile_overrides or {}).items() if k in ALLOWED_OVERRIDE_KEYS and v is not None}
         await session.commit()
     return {"ok": True}
+
+
+class PresetBody(BaseModel):
+    model_id: int
+    preset_id: int
+    name: str | None = None  # label for the auto-created profile (the preset's name)
+
+
+@router.post("/{account_id}/preset")
+async def set_preset(account_id: int, body: PresetBody, request: Request) -> dict:
+    """Point the account at a Capitalbot model+preset and switch AI on. Reuses (or creates) a thin
+    profile holding just those ids — no overrides are ever sent (client decision 2026-10-17)."""
+    async with _service(request).sessionmaker() as session:
+        acc = await session.get(Account, account_id)
+        if not acc:
+            raise HTTPException(404, "No such account")
+        prof = await session.scalar(
+            select(Profile).where(Profile.capital_model_id == body.model_id, Profile.capital_preset_id == body.preset_id).limit(1)
+        )
+        if prof is None:
+            prof = Profile(name=(body.name or f"Preset {body.preset_id}")[:100], capital_model_id=body.model_id, capital_preset_id=body.preset_id, overrides={})
+            session.add(prof)
+            await session.flush()
+        acc.profile_id = prof.id
+        acc.profile_overrides = {}
+        acc.ai_on = True
+        await session.commit()
+    return {"ok": True}
+
+
+# ── per-account stats (new chats · AI replies · convos reported) ─────────────
+def _since(period: str) -> "datetime | None":
+    from datetime import datetime, timezone
+
+    now = utcnow()
+    if period == "today":
+        return datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+    if period == "week":
+        from datetime import timedelta
+
+        return now - timedelta(days=7)
+    return None  # all time
+
+
+async def _stat_counts(session, account_id: int | None, since) -> dict:
+    from panel.models import Message
+
+    chat_where = [Chat.first_in_at.is_not(None)]
+    reply_where = [Chat.reported_reply.is_(True), Chat.first_reply_at.is_not(None)]
+    msg_where = [Message.sender == "ai"]
+    if account_id is not None:
+        chat_where.append(Chat.account_id == account_id)
+        reply_where.append(Chat.account_id == account_id)
+        msg_where.append(Message.account_id == account_id)
+    if since is not None:
+        chat_where.append(Chat.first_in_at >= since)
+        reply_where.append(Chat.first_reply_at >= since)
+        msg_where.append(Message.at >= since)
+    new_chats = await session.scalar(select(func.count()).select_from(Chat).where(*chat_where))
+    convos = await session.scalar(select(func.count()).select_from(Chat).where(*reply_where))
+    replies = await session.scalar(select(func.count()).select_from(Message).where(*msg_where))
+    return {"new_chats": new_chats or 0, "ai_replies": replies or 0, "convos_reported": convos or 0}
+
+
+async def account_stats(session, account_id: int | None) -> dict:
+    out = {p: await _stat_counts(session, account_id, _since(p)) for p in ("today", "week", "all")}
+    if account_id is not None:
+        acc = await session.get(Account, account_id)
+        out["last_activity"] = acc.last_msg_at.isoformat() if acc and acc.last_msg_at else None
+    return out
+
+
+@router.get("/{account_id}/stats")
+async def get_account_stats(account_id: int, request: Request) -> dict:
+    async with _service(request).sessionmaker() as session:
+        if not await session.get(Account, account_id):
+            raise HTTPException(404, "No such account")
+        return await account_stats(session, account_id)
 
 
 # ── profile editing (name / bio / username / photo) ──────────────────────────
@@ -355,7 +437,7 @@ async def set_ai(account_id: int, body: AiBody, request: Request) -> dict:
         if not acc:
             raise HTTPException(404, "No such account")
         if body.on and acc.profile_id is None:
-            raise HTTPException(409, "Pick a persona before switching AI on.")
+            raise HTTPException(409, "Pick a preset before switching AI on.")
         acc.ai_on = body.on
         await session.commit()
     return {"ok": True}
@@ -388,6 +470,7 @@ async def delete_account(account_id: int, body: DeleteBody, request: Request) ->
                 except OSError:
                     pass
             await service.log_activity(session, "info", "account_deleted", f"@{acc.username or acc.tg_user_id} removed")
+            await portal.enqueue_account_retire(session, str(acc.tg_user_id))  # mark it retired in the portal pool
             await session.delete(acc)  # chats/messages cascade
             await session.commit()
     return {"ok": True}

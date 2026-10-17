@@ -152,6 +152,31 @@ class CapitalClient:
             self._catalog_cache = (now, out)
         return out
 
+    # ── license-wide statistics (overall numbers for the Status page) ──────────
+    async def statistics(self, period: str = "7days") -> dict | None:
+        """Combined numbers across the whole license for a period, or None if unavailable.
+        period ∈ today · 3days · 7days · 30days · all (CapitalAI_Docs.md §/statistics)."""
+        if not self.configured:
+            return None
+        body = {"licensekey": self.license_key, "modelId": "all", "presetId": "all", "period": period, "account": "all"}
+        try:
+            resp = await self._http.post(f"{self._base}/statistics", json=body, timeout=CATALOG_TIMEOUT)
+        except httpx.RequestError:
+            return None
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        stats = data.get("statistics") if isinstance(data, dict) else None
+        if not isinstance(stats, dict):
+            return None
+        return {
+            "messages": stats.get("messages"),
+            "conversations": stats.get("conversations"),
+            "newConversations": stats.get("newConversations"),
+            "conversionsTotal": stats.get("conversionsTotal"),
+            "conversionsPercent": stats.get("conversionsPercent"),
+        }
+
     # ── generate a chat response ──────────────────────────────────────────────
     async def generate_response(
         self,

@@ -75,7 +75,8 @@ def _convo(outbox):
 
 
 def _status(outbox):
-    return [p for kind, p, _dk, _st in outbox if kind == "account_status"]
+    # account_status now also carries register/rename/retire events; keep only real status reports.
+    return [p for kind, p, _dk, _st in outbox if kind == "account_status" and "status" in p]
 
 
 def test_incoming_then_reply_makes_first_and_reply_events(client, directory):

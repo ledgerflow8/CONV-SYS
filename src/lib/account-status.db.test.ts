@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { db } from "@/lib/db";
-import { recordAccountStatus, renameAccount } from "@/lib/account-status";
+import { recordAccountStatus, registerAccount, renameAccount, retireAccount } from "@/lib/account-status";
+import { claimAvailableAccount } from "@/lib/team";
 import { makeAccount, makeModel, makeTeam, resetDb } from "../../test/fixtures";
 
 beforeEach(resetDb);
@@ -98,5 +99,50 @@ describe("renameAccount + numeric-id matching (username changes from the panel)"
     expect(r2.ok && r2.data.recorded).toBe(true);
     const after = await db.tgAccount.findUniqueOrThrow({ where: { id: acc.id } });
     expect(after.panelStatus).toBe("limited");
+  });
+});
+
+describe("registerAccount / retireAccount (portal pool auto-sync)", () => {
+  it("creates an unassigned account keyed by numeric id", async () => {
+    const r = await registerAccount({ action: "register", tgUserId: "5005", username: "NewAcct", phone: "+13095550123", link: "https://t.me/newacct" });
+    expect(r).toEqual({ ok: true, data: { recorded: true } });
+    const acc = await db.tgAccount.findFirstOrThrow({ where: { tgUserId: BigInt(5005) } });
+    expect(acc.modelId).toBeNull(); // unassigned until a Director sets it
+    expect(acc.username).toBe("newacct");
+    expect(acc.status).toBe("AVAILABLE");
+  });
+
+  it("registers a no-username account and keeps it out of the claimable pool", async () => {
+    const model = await makeModel();
+    await registerAccount({ action: "register", tgUserId: "5006", username: null, phone: "+1" });
+    const acc = await db.tgAccount.findFirstOrThrow({ where: { tgUserId: BigInt(5006) } });
+    expect(acc.username).toBeNull();
+    // Even once a model is set, a null-username AVAILABLE account is never claimed.
+    await db.tgAccount.update({ where: { id: acc.id }, data: { modelId: model.id } });
+    const claimed = await claimAvailableAccount(db, model.id);
+    expect(claimed).toBeNull();
+  });
+
+  it("refreshes an existing account without touching its model or holder", async () => {
+    const t = await makeTeam(); // assigned account, has a model + holder
+    await db.tgAccount.update({ where: { id: t.account.id }, data: { tgUserId: BigInt(5007) } });
+    await registerAccount({ action: "register", tgUserId: "5007", username: "movedname", phone: "+1999", link: "https://t.me/movedname" });
+    const acc = await db.tgAccount.findUniqueOrThrow({ where: { id: t.account.id } });
+    expect(acc.username).toBe("movedname");
+    expect(acc.modelId).toBe(t.model.id); // unchanged
+    expect(acc.vaId).toBe(t.va.id); // holder unchanged
+    expect(acc.status).toBe("ASSIGNED");
+  });
+
+  it("retires an account and releases its holder", async () => {
+    const t = await makeTeam();
+    await db.tgAccount.update({ where: { id: t.account.id }, data: { tgUserId: BigInt(5008) } });
+    const r = await retireAccount({ action: "retire", tgUserId: "5008" });
+    expect(r.ok && r.data.recorded).toBe(true);
+    const acc = await db.tgAccount.findUniqueOrThrow({ where: { id: t.account.id } });
+    expect(acc.status).toBe("RETIRED");
+    expect(acc.vaId).toBeNull();
+    const open = await db.tgAssignment.findFirst({ where: { tgAccountId: t.account.id, endedAt: null } });
+    expect(open).toBeNull(); // the assignment was closed
   });
 });

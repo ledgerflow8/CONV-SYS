@@ -68,6 +68,22 @@ async def status(request: Request) -> dict:
     }
 
 
+@router.get("/stats")
+async def system_stats(request: Request) -> dict:
+    """Overall panel stats (today/week/all) plus Capitalbot's license-wide numbers where configured."""
+    from panel.routes.accounts import account_stats
+
+    service = _service(request)
+    async with service.sessionmaker() as session:
+        panel = await account_stats(session, None)
+    capital = request.app.state.capital
+    cap: dict = {}
+    if capital and capital.configured:
+        for ours, theirs in (("today", "today"), ("week", "7days"), ("all", "all")):
+            cap[ours] = await capital.statistics(theirs)
+    return {"panel": panel, "capital": cap}
+
+
 class SettingsBody(BaseModel):
     quiet_after_hours: int | None = None
     ai_debounce_sec: int | None = None

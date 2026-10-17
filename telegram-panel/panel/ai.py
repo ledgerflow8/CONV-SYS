@@ -146,7 +146,7 @@ class AiEngine:
                     account_id=req["account_id"],
                     user_infos=req["user_infos"],
                     chat_history=req["history"],
-                    overrides=req["overrides"],
+                    overrides=None,  # persona overrides crash Capitalbot — model + preset only (client decision 2026-10-17)
                     file_path=file_path,
                 )
         except CapitalError as e:

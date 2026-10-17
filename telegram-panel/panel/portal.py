@@ -113,6 +113,28 @@ async def enqueue_account_status(
     await _enqueue(session, "account_status", None, payload)
 
 
+async def enqueue_account_register(
+    session: AsyncSession, tg_user_id: str, username: str | None, phone: str | None, link: str | None
+) -> None:
+    """Register/refresh an account in the portal's pool (keyed by numeric id; arrives unassigned).
+    Same account-status endpoint + auth; discriminated by action."""
+    payload = {
+        "action": "register",
+        "tgUserId": tg_user_id,
+        "tgAccount": username or tg_user_id,
+        "username": username,
+        "phone": phone,
+        "link": link,
+    }
+    await _enqueue(session, "account_status", f"register:{tg_user_id}", payload)
+
+
+async def enqueue_account_retire(session: AsyncSession, tg_user_id: str) -> None:
+    """Mark an account retired in the portal when it's removed from the panel."""
+    payload = {"action": "retire", "tgUserId": tg_user_id, "tgAccount": tg_user_id}
+    await _enqueue(session, "account_status", f"retire:{tg_user_id}", payload)
+
+
 async def enqueue_account_rename(
     session: AsyncSession, tg_user_id: str, old_username: str | None, new_username: str | None, at: datetime
 ) -> None:
