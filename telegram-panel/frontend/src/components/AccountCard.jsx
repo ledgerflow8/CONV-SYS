@@ -29,7 +29,11 @@ export default function AccountCard({ account, onChanged, onOpen }) {
     <div className={`rounded-xl border border-l-4 bg-card p-3 ${BORDER[account.color]}`}>
       <div className="flex items-center gap-3">
         {account.has_avatar ? (
-          <img src={`/api/accounts/${account.id}/avatar`} alt="" className="size-11 shrink-0 rounded-full object-cover" />
+          <img
+            src={`/api/accounts/${account.id}/avatar?v=${account.avatar_version ?? 0}`}
+            alt=""
+            className="size-11 shrink-0 rounded-full object-cover"
+          />
         ) : (
           <div className="grid size-11 shrink-0 place-items-center rounded-full bg-secondary text-sm font-medium">
             {(account.username || "?")[0].toUpperCase()}

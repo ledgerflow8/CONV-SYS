@@ -48,6 +48,20 @@ async def _quiet_hours(session) -> int:
     return int(await get_setting(session, "quiet_after_hours", DEFAULT_QUIET_HOURS))
 
 
+def _avatar_version(acc: Account) -> int | None:
+    """A cache-buster that changes only when the avatar file is rewritten.
+
+    Appended as ?v=<version> so Safari (which caches the fixed avatar URL hard)
+    shows a changed or removed photo immediately.
+    """
+    if not acc.avatar_path:
+        return None
+    try:
+        return int(Path(acc.avatar_path).stat().st_mtime)
+    except OSError:
+        return None
+
+
 def _card(acc: Account, quiet_hours: int, connected: bool, in_portal: bool | None = None) -> dict:
     return {
         "id": acc.id,
@@ -64,6 +78,7 @@ def _card(acc: Account, quiet_hours: int, connected: bool, in_portal: bool | Non
         "profile_id": acc.profile_id,
         "has_username": bool(acc.username),  # no username → can't be a tracking-link account in the portal
         "has_avatar": bool(acc.avatar_path),
+        "avatar_version": _avatar_version(acc),
         "last_msg_at": acc.last_msg_at.isoformat() if acc.last_msg_at else None,
         "last_incoming_at": acc.last_incoming_at.isoformat() if acc.last_incoming_at else None,
     }

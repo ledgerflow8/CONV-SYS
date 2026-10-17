@@ -194,6 +194,25 @@ def test_upload_photo_sets_it_and_refreshes_card(client, directory):
     assert r.status_code == 200
     assert _client(client, acc).photo_set is not None
     assert r.json()["card"]["has_avatar"] is True
+    assert isinstance(r.json()["card"]["avatar_version"], int)  # cache-buster so the new photo shows
+
+
+def test_card_carries_avatar_version_and_nulls_on_remove(client, directory):
+    # The avatar URL is fixed, so the card ships a version query param that changes with the
+    # file and goes null on removal — that's what busts Safari's hard image cache.
+    acc = setup(client, directory, 70, 6011, "vera")
+    run(client, lambda: client.app.state.service.refresh_avatar(acc))
+    card = client.get(f"/api/accounts/{acc}", headers=H).json()
+    assert card["has_avatar"] is True
+    assert isinstance(card["avatar_version"], int)
+    r = client.post(
+        f"/api/accounts/{acc}/profile",
+        data={"first_name": "A", "last_name": "", "bio": "", "username": "vera", "remove_photo": "true"},
+        headers=H,
+    )
+    assert r.status_code == 200
+    assert r.json()["card"]["has_avatar"] is False
+    assert r.json()["card"]["avatar_version"] is None
 
 
 def test_reject_non_image_photo(client, directory):

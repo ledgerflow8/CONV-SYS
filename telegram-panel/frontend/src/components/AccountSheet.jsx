@@ -182,6 +182,7 @@ export default function AccountSheet({ accountId, onClose, onChanged }) {
               accountId={accountId}
               connected={acc.connected}
               currentUsername={acc.username}
+              hasAvatar={acc.has_avatar}
               onSaved={async () => {
                 await reload();
                 onChanged();
