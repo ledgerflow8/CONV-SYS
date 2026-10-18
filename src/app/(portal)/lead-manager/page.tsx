@@ -9,6 +9,7 @@ import { db } from "@/lib/db";
 import { formatCents } from "@/lib/money";
 import { scopeFor } from "@/lib/scope";
 import { currentPeriods, inWeek, qualifiedTotals, qualifiedTotalsBy, ZERO } from "@/lib/stats";
+import { FireButton, MoveTeamButton } from "@/components/org-controls";
 import { CreateLeadVa, LeadVaPasswordButton } from "./lead-manager-controls";
 
 export default async function LeadManagerDashboard() {
@@ -24,6 +25,7 @@ export default async function LeadManagerDashboard() {
       select: {
         id: true,
         username: true,
+        modelId: true,
         model: { select: { name: true } },
         children: {
           where: { role: "VA", status: "ACTIVE" },
@@ -74,7 +76,7 @@ export default async function LeadManagerDashboard() {
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
                           <ChevronDown className="size-4 transition-transform group-open:rotate-180" aria-hidden />
-                          <span className="font-medium">@{lva.username}</span>
+                          <span className="font-medium">{lva.username}</span>
                           {lva.model && <Badge variant="secondary">{lva.model.name}</Badge>}
                         </div>
                         <p className="pl-6 text-xs text-muted-foreground">
@@ -88,18 +90,21 @@ export default async function LeadManagerDashboard() {
                       {lva.children.map((va) => (
                         <li key={va.id} className="flex items-center justify-between gap-2 text-sm">
                           <span>
-                            @{va.username}
+                            {va.username}
                             <span className="text-xs text-muted-foreground">
                               {" "}
-                              · {va.tgAccount ? `@${va.tgAccount.username}` : "no account"}
+                              · {va.tgAccount ? `@${va.tgAccount.username ?? "unnamed"}` : ""}
                             </span>
+                            {!va.tgAccount && <Badge variant="destructive" className="ml-1">Needs account</Badge>}
                           </span>
                           <span className="tabular-nums text-muted-foreground">{byVa.get(va.id)?.convos ?? 0}</span>
                         </li>
                       ))}
                     </ul>
-                    <div className="mt-2 pl-6">
+                    <div className="mt-2 flex flex-wrap gap-2 pl-6">
                       <LeadVaPasswordButton userId={lva.id} username={lva.username} />
+                      <MoveTeamButton leadVaId={lva.id} username={lva.username} modelId={lva.modelId} models={models} />
+                      <FireButton targetId={lva.id} username={lva.username} />
                     </div>
                   </details>
                 </li>

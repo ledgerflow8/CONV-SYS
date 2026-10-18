@@ -6,6 +6,7 @@ import { audit } from "@/lib/audit";
 import { fail, type Result } from "@/lib/action-result";
 import type { CurrentUser } from "@/lib/auth/session";
 import { notifyAccountChange, type NotifyResult } from "@/lib/notify";
+import { refillWaitingVas } from "@/lib/org";
 import { claimAvailableAccount } from "@/lib/team";
 
 class Abort extends Error {}
@@ -71,6 +72,7 @@ export async function takeAccountOutOfService(
 /** Banned/retired → back to the pool as AVAILABLE (e.g. a ban was appealed). */
 export async function restoreAccount(actor: CurrentUser, accountId: string): Promise<Result<null>> {
   if (actor.role !== "DIRECTOR") return fail("Only the Director can restore accounts.");
+  const acct0 = await db.tgAccount.findUnique({ where: { id: accountId }, select: { modelId: true } });
   try {
     await db.$transaction(async (tx) => {
       const acct = await lockAccount(tx, accountId);
@@ -79,6 +81,7 @@ export async function restoreAccount(actor: CurrentUser, accountId: string): Pro
       await tx.tgAccount.update({ where: { id: acct.id }, data: { status: "AVAILABLE", vaId: null } });
       await audit(tx, { actorId: actor.id, action: "tg.restore", target: acct.id, meta: { from: acct.status } });
     });
+    await refillWaitingVas(acct0?.modelId);
     return { ok: true, data: null };
   } catch (e) {
     if (e instanceof Abort) return fail(e.message);

@@ -21,6 +21,7 @@ import {
 } from "@/lib/stats";
 import { formatPeriod } from "@/lib/time";
 import { cn } from "@/lib/utils";
+import { FireButton, MoveTeamButton } from "@/components/org-controls";
 
 export default async function DirectorOverview() {
   const user = await requireRole("DIRECTOR");
@@ -42,10 +43,11 @@ export default async function DirectorOverview() {
         id: true,
         username: true,
         status: true,
-        children: { where: { role: "LEAD_VA" }, orderBy: { username: "asc" }, select: { id: true, username: true, status: true } },
+        children: { where: { role: "LEAD_VA" }, orderBy: { username: "asc" }, select: { id: true, username: true, status: true, modelId: true } },
       },
     }),
   ]);
+  const activeModels = await db.model.findMany({ where: { active: true }, orderBy: { name: "asc" }, select: { id: true, name: true } });
   const owedTotal = weekTotals.vaCents + weekTotals.leadVaCents + weekTotals.lmCents;
 
   return (
@@ -114,7 +116,7 @@ export default async function DirectorOverview() {
                   <details className="group">
                     <summary className="flex cursor-pointer list-none items-center justify-between gap-2">
                       <span className="flex items-center gap-2 font-medium">
-                        <ChevronDown className="size-4 transition-transform group-open:rotate-180" aria-hidden />@{lm.username}
+                        <ChevronDown className="size-4 transition-transform group-open:rotate-180" aria-hidden />{lm.username}
                         {lm.status !== "ACTIVE" && <span className="text-xs text-muted-foreground">({lm.status.toLowerCase()})</span>}
                       </span>
                       <span className="text-sm tabular-nums text-muted-foreground">
@@ -126,15 +128,31 @@ export default async function DirectorOverview() {
                       {lm.children.map((lva) => {
                         const lt = byLva.get(lva.id) ?? ZERO;
                         return (
-                          <li key={lva.id} className="flex items-center justify-between gap-2 text-sm">
-                            <span>@{lva.username}</span>
-                            <span className="tabular-nums text-muted-foreground">
-                              {lt.convos} · {formatCents(lt.vaCents + lt.leadVaCents)}
-                            </span>
+                          <li key={lva.id} className="space-y-1.5 text-sm">
+                            <div className="flex items-center justify-between gap-2">
+                              <span>
+                                {lva.username}
+                                {lva.status !== "ACTIVE" && <span className="text-xs text-muted-foreground"> ({lva.status.toLowerCase()})</span>}
+                              </span>
+                              <span className="tabular-nums text-muted-foreground">
+                                {lt.convos} · {formatCents(lt.vaCents + lt.leadVaCents)}
+                              </span>
+                            </div>
+                            {lva.status === "ACTIVE" && (
+                              <div className="flex flex-wrap justify-end gap-2">
+                                <MoveTeamButton leadVaId={lva.id} username={lva.username} modelId={lva.modelId} models={activeModels} />
+                                <FireButton targetId={lva.id} username={lva.username} />
+                              </div>
+                            )}
                           </li>
                         );
                       })}
                     </ul>
+                    {lm.status === "ACTIVE" && (
+                      <div className="mt-3 flex justify-end">
+                        <FireButton targetId={lm.id} username={lm.username} />
+                      </div>
+                    )}
                   </details>
                 </li>
               );

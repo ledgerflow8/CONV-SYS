@@ -152,7 +152,7 @@ export function CreatePersonDialog({ role, roleLabel, models, whatHappensNext, c
 
       <CredentialsDialog
         credentials={credentials}
-        title={`${roleLabel} created`}
+        title={credentials?.reactivated ? `${roleLabel} reactivated (they worked here before)` : `${roleLabel} created`}
         onDone={() => setCredentials(null)}
       />
     </>

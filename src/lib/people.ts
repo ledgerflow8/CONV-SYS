@@ -9,7 +9,8 @@ import type { CurrentUser } from "@/lib/auth/session";
 import { normalizeHandle } from "@/lib/telegram";
 import { portalUsername } from "@/lib/usernames";
 
-export type Credentials = { username: string; password: string; model: string | null };
+// `reactivated`: the handle belonged to someone who was fired; their login was brought back instead.
+export type Credentials = { username: string; password: string; model: string | null; reactivated?: boolean };
 
 // Who may create whom: Director → Lead Manager, Lead Manager → Lead VA.
 const CREATES: Partial<Record<Role, Role>> = { DIRECTOR: "LEAD_MANAGER", LEAD_MANAGER: "LEAD_VA" };
@@ -36,13 +37,40 @@ export async function createManagedUser(
   const password = generatePassword();
   const passwordHash = await hashPassword(password);
 
+  let result: { username: string; reactivated: boolean };
   try {
-    await db.$transaction(async (tx) => {
-      const taken = await tx.user.findFirst({
+    result = await db.$transaction(async (tx) => {
+      const existing = await tx.user.findFirst({
         where: { username: { equals: username, mode: "insensitive" } },
-        select: { id: true },
+        select: { id: true, username: true, role: true, status: true },
       });
-      if (taken) throw new UsernameTaken();
+
+      // A fired person's handle doesn't block them coming back: reactivate the same login under
+      // the new manager (new password; their old sessions were already ended when they were fired).
+      if (existing?.status === "FIRED" && existing.role === input.role) {
+        const r = await tx.user.updateMany({
+          where: { id: existing.id, status: "FIRED" },
+          data: {
+            status: "ACTIVE",
+            firedAt: null,
+            parentId: actor.id,
+            modelId: model?.id ?? null,
+            telegramHandle: handle,
+            passwordHash,
+            sessionVersion: { increment: 1 },
+          },
+        });
+        if (r.count === 0) throw new UsernameTaken();
+        await audit(tx, {
+          actorId: actor.id,
+          action: "user.reactivate",
+          target: existing.id,
+          meta: { username: existing.username, role: input.role, modelId: model?.id ?? null },
+        });
+        return { username: existing.username, reactivated: true };
+      }
+      if (existing?.status === "DISABLED") throw new Disabled(existing.username);
+      if (existing) throw new UsernameTaken();
 
       const user = await tx.user.create({
         data: {
@@ -61,14 +89,18 @@ export async function createManagedUser(
         target: user.id,
         meta: { username, role: input.role, modelId: model?.id ?? null },
       });
+      return { username, reactivated: false };
     });
   } catch (e) {
-    if (e instanceof UsernameTaken || isUniqueViolation(e)) return fail(`@${username} is already taken.`);
+    if (e instanceof Disabled) return fail(`${e.message} exists but is disabled. Enable it in People instead.`);
+    if (e instanceof UsernameTaken || isUniqueViolation(e)) return fail(`${username} is already taken.`);
     throw e;
   }
 
-  return { ok: true, data: { username, password, model: model?.name ?? null } };
+  return { ok: true, data: { username: result.username, password, model: model?.name ?? null, reactivated: result.reactivated } };
 }
+
+class Disabled extends Error {}
 
 class UsernameTaken extends Error {}
 

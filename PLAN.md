@@ -342,6 +342,16 @@ Director (or Lead VA, if allowed) marks an account `BANNED` → current assignme
 
 Lead VA fires a VA → user `FIRED`, login blocked, tracking link deactivated, assignment ended, account returns to `AVAILABLE`. Earned convos in the open week still pay out.
 
+### Org changes (client feedback 2026-10-18, `src/lib/org.ts`)
+
+- **Who fires whom:** Director → anyone; Lead Manager → their Lead VAs; Lead VA → their VAs. Firing someone with people under them requires a choice: fire them too, or move them to another person of the same role (a Lead VA's VAs moving to a team on another model swap accounts, as below).
+- **Fire inactive VAs:** Director (all) or Lead VA (own team) picks N days; VAs with no qualified convo in N days, hired or re-hired more than N days ago, are listed, then fired on confirm.
+- **Move a team to another model** (Director, or the Lead Manager for their own teams; bulk "move all teams" for the Director): preview first. Each VA's account goes back to the old model's pool and they get a free account from the new pool; if short, nothing moves unless confirmed, and VAs left without an account are flagged "Needs account". Bot notifies each VA; tracking links and past earnings unchanged.
+- **Needs account:** whenever accounts become free for a model (added, imported, model assigned, restored, freed by firing/moving, or a panel account gets its username), they go to that model's waiting VAs, longest-waiting first, with a bot message.
+- **Inactive models** can't be chosen for new teams, team moves, or assigning pool accounts, and their teams can't add VAs.
+- **Rename model:** Director, inline on Models; everything references the model by id.
+- **Re-adding fired people:** creating a Lead Manager / Lead VA (or adding a VA) whose handle belongs to someone fired reactivates the same login under the new manager.
+
 ---
 
 ## 6. Tracking links

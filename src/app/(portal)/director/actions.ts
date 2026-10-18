@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { fail, type Result } from "@/lib/action-result";
 import { requireRole } from "@/lib/auth/session";
-import { createModel, setModelActive } from "@/lib/models";
+import { createModel, renameModel, setModelActive } from "@/lib/models";
 import { createManagedUser, regeneratePassword, setLeadManagerStatus, type Credentials } from "@/lib/people";
 import { addPoolAccount, importPoolAccounts, type ImportSummary } from "@/lib/pool";
 import { importConvosCsv, type ConvoImportSummary } from "@/lib/convo-import";
@@ -15,6 +15,7 @@ import { restoreAccount, takeAccountOutOfService, type TakeOutcome } from "@/lib
 import { syncCapitalAI } from "@/lib/capitalai-sync";
 import { audit } from "@/lib/audit";
 import { db } from "@/lib/db";
+import { refillWaitingVas } from "@/lib/org";
 import { saveSettings } from "@/lib/settings";
 import { parseSettingsForm, type SettingsFormErrors } from "@/lib/settings-form";
 
@@ -28,6 +29,15 @@ export async function createModelAction(name: unknown): Promise<Result<{ id: str
   if (!parsed.success) return fail("Enter a model name.");
   const result = await createModel(actor, parsed.data);
   revalidatePath("/director/models");
+  return result;
+}
+
+export async function renameModelAction(modelId: unknown, name: unknown): Promise<Result<{ name: string }>> {
+  const actor = await requireRole("DIRECTOR");
+  const parsed = z.tuple([id, z.string().max(100)]).safeParse([modelId, name]);
+  if (!parsed.success) return fail("Enter a model name.");
+  const result = await renameModel(actor, ...parsed.data);
+  revalidatePath("/", "layout"); // the name shows on every page
   return result;
 }
 
@@ -65,13 +75,15 @@ export async function setAccountModelAction(input: unknown): Promise<Result<null
   if (!parsed.success) return fail("Pick an account and a model.");
   const [acc, model] = await Promise.all([
     db.tgAccount.findUnique({ where: { id: parsed.data.accountId }, select: { id: true } }),
-    db.model.findUnique({ where: { id: parsed.data.modelId }, select: { id: true } }),
+    db.model.findUnique({ where: { id: parsed.data.modelId }, select: { id: true, active: true } }),
   ]);
   if (!acc || !model) return fail("Account or model not found.");
+  if (!model.active) return fail("That model is inactive. Pick an active one.");
   await db.$transaction(async (tx) => {
     await tx.tgAccount.update({ where: { id: acc.id }, data: { modelId: model.id } });
     await audit(tx, { actorId: actor.id, action: "tgaccount.set_model", target: acc.id, meta: { modelId: model.id } });
   });
+  await refillWaitingVas(model.id);
   revalidatePath("/director/pool");
   return { ok: true, data: null };
 }
