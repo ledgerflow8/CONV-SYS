@@ -79,6 +79,7 @@ def create_app(settings: Settings | None = None, dist: Path = DIST, client_facto
             try:
                 yield
             finally:
+                await app.state.service.cancel_all_reconnects()  # stop background retries first
                 await manager.shutdown()  # disconnect every client; never log out
                 await engine_ai.shutdown()
                 for task in list(app.state.background):

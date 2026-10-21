@@ -401,6 +401,7 @@ async def set_power(account_id: int, body: PowerBody, request: Request) -> dict:
             raise HTTPException(409, f"This account is {acc.status} and can't be reconnected.")
         params = service.connect_params(acc) if body.on else None
 
+    await service.cancel_reconnect(account_id)  # this toggle takes over from any background retry
     if body.on:
         # Connect only if we aren't already holding a live client — calling connect() on a
         # connected account would trip the "already connected" guard. Either way we reconcile the
@@ -473,6 +474,7 @@ async def delete_account(account_id: int, body: DeleteBody, request: Request) ->
         if body.confirm.strip().lstrip("@").lower() != expected.lower():
             raise HTTPException(400, "The username you typed doesn't match this account.")
 
+    await service.cancel_reconnect(account_id)  # stop any background retry before we tear it down
     await service.manager.log_out_and_remove(account_id)  # ends the session on Telegram
     async with service.sessionmaker() as session:
         acc = await session.get(Account, account_id)

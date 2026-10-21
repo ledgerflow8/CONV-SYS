@@ -330,6 +330,7 @@ All settled on 2026-10-14. Nothing is waiting on the client or Capitalbot. ✅ m
 8. **Account count:** built for up to about 200 accounts in one process.
 9. ✅ **Sole connection:** the panel is the only Telegram connection. Capitalbot is used through its API only, never through its own Telegram connector.
 10. **Panel domain:** `panel.fansflow.eu`.
+11. **Unreadable newer-layer updates (settled 2026-10-21):** Telegram periodically sends updates from an API layer newer than our Telethon (1.45.0 is the newest on PyPI; the GitHub `v1` mirror is behind, so there's no version to bump to). A single such update is already skipped by Telethon's receive loop, but one inside a `getDifference` response makes Telethon tear the connection down (`TypeNotFoundError`). We classify that as a **transient** drop and auto-reconnect with backoff (5s→5min, jittered): a fresh `StringSession` connection re-baselines on `getState` and skips the unreadable backlog, so the account comes back on its own — no manual toggling. Banned/revoked (powered off) and **frozen** (left as-is) are not retried. The card shows "Reconnecting to Telegram…", never the raw exception. This realises the step-5 "reconnect backoff" (§4.5), event-driven rather than via the 60s loop.
 
 ## 11. Capitalbot questions (resolved)
 

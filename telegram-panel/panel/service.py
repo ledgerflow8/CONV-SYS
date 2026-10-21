@@ -3,6 +3,7 @@ Telegram logic of its own (that's AccountManager / tg/) and no HTTP (that's rout
 
 import asyncio
 import logging
+import random
 from datetime import datetime
 from pathlib import Path
 
@@ -18,6 +19,8 @@ from panel.tg.client import AccountInfo, ConnectParams, IncomingMessage, TgError
 # Internal account status → the portal's account_status enum (PLAN.md §4.4).
 # connecting is transient and never reported; error is reported as offline.
 _PORTAL_STATUS = {"online": "online", "offline": "offline", "limited": "limited", "banned": "banned", "revoked": "revoked", "frozen": "frozen", "error": "offline"}
+
+RECONNECTING_DETAIL = "Reconnecting to Telegram…"  # friendly card text; never the raw exception
 
 
 def _later(a: datetime | None, b: datetime | None) -> datetime | None:
@@ -49,6 +52,11 @@ class Service:
         self.default_api_hash = default_api_hash
         self.import_gap_seconds = 2.0  # pause between test-connects so a batch isn't a login flood
         self.ai = None  # the AiEngine, wired in by main.lifespan (step 3). None in step-1/2 tests.
+        # Auto-reconnect backoff for transient drops (network, timeout, unreadable update). Seconds;
+        # holds at the last value, with jitter so 100 accounts don't reconnect in lockstep.
+        self.reconnect_delays = [5.0, 15.0, 30.0, 60.0, 120.0, 300.0]
+        self.reconnect_jitter = 0.2
+        self._reconnect_tasks: dict[int, asyncio.Task] = {}
 
     # ── helpers ────────────────────────────────────────────────────────────
     def connect_params(self, acc: Account, session_string: str | None = None) -> ConnectParams:
@@ -211,28 +219,122 @@ class Service:
         await portal.enqueue_account_register(session, str(acc.tg_user_id), acc.username, acc.phone, link)
 
     async def _on_drop(self, account_id: int, err: TgError | None) -> None:
-        """Called by AccountManager when a live connection drops on its own (ban, revoke, network)."""
+        """Called by AccountManager when a live connection drops on its own.
+
+        Dead (banned/revoked) → park it and power off; it won't come back by reconnecting.
+        Frozen → record it and leave it alone (its own state, not a fault to retry).
+        Anything else (network, timeout, an update from a newer Telegram layer) is transient:
+        keep power on, show "reconnecting" (never the raw exception) and reconnect with backoff.
+        """
+        reconnect = False
+        retry_after: int | None = None
         async with self.sessionmaker() as session:
             acc = await session.get(Account, account_id)
             if not acc:
                 return
             old = acc.status
             raw = err.raw if err else None
-            log.warning("connection dropped account=%s @%s status=%s raw=%s detail=%s", account_id, acc.username, err.status if err else "offline", raw, err.detail if err else None)
+            status = err.status if err else "offline"
+            detail = err.detail if err else None
+            log.warning("connection dropped account=%s @%s status=%s raw=%s detail=%s", account_id, acc.username, status, raw, detail)
             if err and err.dead:
                 acc.status, acc.status_detail = err.status, err.detail
                 acc.power_on = False  # a dead session won't come back by reconnecting
                 await self.log_activity(session, "error", "account_dropped", f"@{acc.username}: {err.detail} [{raw}]", account_id)
+            elif err and err.status == "frozen":
+                acc.status, acc.status_detail = "frozen", err.detail
+                await self.log_activity(session, "warn", "account_dropped", f"@{acc.username}: {err.detail} [{raw}]", account_id)
             else:
-                acc.status = "offline"
-                acc.status_detail = err.detail if err else None
+                acc.status, acc.status_detail = "connecting", RECONNECTING_DETAIL
+                await self.log_activity(session, "warn", "account_reconnecting", f"@{acc.username or acc.tg_user_id}: {detail or 'connection lost'} [{raw}] — reconnecting", account_id)
+                reconnect = True
+                retry_after = err.retry_after if err else None
             acc.updated_at = utcnow()
             if acc.status != old:
-                await self._enqueue_status(session, acc)
+                await self._enqueue_status(session, acc)  # "connecting" isn't reported (transient)
             await session.commit()
+        if reconnect:
+            self._schedule_reconnect(account_id, first_delay=retry_after)
 
     def on_drop(self):
         return self._on_drop
+
+    # ── auto-reconnect (resilience against newer-layer updates and network blips) ──
+    def _reconnect_delay(self, attempt: int) -> float:
+        base = self.reconnect_delays[min(attempt, len(self.reconnect_delays) - 1)]
+        return base + base * self.reconnect_jitter * random.random() if self.reconnect_jitter else base
+
+    def _schedule_reconnect(self, account_id: int, first_delay: float | None = None) -> None:
+        task = self._reconnect_tasks.get(account_id)
+        if task and not task.done():
+            return  # a reconnect loop is already running for this account
+        self._reconnect_tasks[account_id] = asyncio.create_task(self._reconnect_loop(account_id, first_delay))
+
+    async def _reconnect_loop(self, account_id: int, first_delay: float | None = None) -> None:
+        """Keep trying to bring a transiently-dropped account back, with backoff, until it's online
+        again or it's powered off / removed / turns out dead or frozen."""
+        attempt = 0
+        try:
+            while True:
+                delay = first_delay if (attempt == 0 and first_delay) else self._reconnect_delay(attempt)
+                await asyncio.sleep(delay)
+                async with self.sessionmaker() as session:
+                    acc = await session.get(Account, account_id)
+                    if acc is None or not acc.power_on or acc.status in ("banned", "revoked", "frozen"):
+                        return  # someone powered it off / deleted it, or it's terminal
+                    params = self.connect_params(acc)
+                if self.manager.is_connected(account_id):
+                    return  # a manual power-on got there first
+                try:
+                    info = await self.manager.connect(account_id, params, self.on_drop(), self.message_cb(account_id))
+                except TgError as e:
+                    if e.leave_alone:  # dead or frozen: stop retrying
+                        await self._mark_status(account_id, e.status, e.detail, power_off=e.dead)
+                        return
+                    attempt += 1
+                    await self._mark_reconnecting(account_id, attempt)
+                    continue
+                except Exception:
+                    log.exception("reconnect attempt failed for %s", account_id)
+                    attempt += 1
+                    await self._mark_reconnecting(account_id, attempt)
+                    continue
+                await self._mark_online(account_id, info)
+                asyncio.create_task(self.refresh_avatar(account_id))
+                async with self.sessionmaker() as session:
+                    acc = await session.get(Account, account_id)
+                    if acc:
+                        await self.log_activity(session, "info", "account_reconnected", f"@{acc.username or acc.tg_user_id}: reconnected", account_id)
+                        await session.commit()
+                return
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._reconnect_tasks.pop(account_id, None)
+
+    async def _mark_reconnecting(self, account_id: int, attempt: int) -> None:
+        """Keep the card message clear while retries continue (#4: never the raw exception)."""
+        detail = RECONNECTING_DETAIL if attempt < 3 else f"Can't reach Telegram — still retrying (attempt {attempt})."
+        async with self.sessionmaker() as session:
+            acc = await session.get(Account, account_id)
+            if acc and acc.power_on and acc.status not in ("banned", "revoked", "frozen"):
+                acc.status, acc.status_detail = "connecting", detail
+                acc.updated_at = utcnow()
+                await session.commit()
+
+    async def cancel_reconnect(self, account_id: int) -> None:
+        """Stop a pending reconnect loop (on power-off, delete, or a manual power-on taking over)."""
+        task = self._reconnect_tasks.pop(account_id, None)
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    async def cancel_all_reconnects(self) -> None:
+        for account_id in list(self._reconnect_tasks):
+            await self.cancel_reconnect(account_id)
 
     # ── avatars ────────────────────────────────────────────────────────────
     async def refresh_avatar(self, account_id: int) -> None:
@@ -253,7 +355,9 @@ class Service:
         like a login flood from one IP."""
         async with self.sessionmaker() as session:
             rows = (await session.scalars(select(Account).where(Account.power_on.is_(True)))).all()
-            targets = [(a.id, self.connect_params(a)) for a in rows if a.status not in ("banned", "revoked")]
+            # Reconnect everything powered on — including accounts parked offline/error by an earlier
+            # drop (e.g. a newer-layer update) — but leave banned/revoked/frozen alone.
+            targets = [(a.id, self.connect_params(a)) for a in rows if a.status not in ("banned", "revoked", "frozen")]
         for account_id, params in targets:
             try:
                 info = await self.manager.connect(account_id, params, self.on_drop(), self.message_cb(account_id))
@@ -264,7 +368,12 @@ class Service:
                 async with self.sessionmaker() as session:
                     await self.log_activity(session, "error", "connect_failed", f"startup: {e.detail} [{e.raw}]", account_id)
                     await session.commit()
-                await self._mark_status(account_id, e.status, e.detail, power_off=e.dead)
+                if e.leave_alone:
+                    await self._mark_status(account_id, e.status, e.detail, power_off=e.dead)
+                else:
+                    # Transient (network/timeout/unreadable update): keep trying in the background.
+                    await self._mark_status(account_id, "connecting", RECONNECTING_DETAIL)
+                    self._schedule_reconnect(account_id)
             except Exception:
                 log.exception("startup connect failed for %s", account_id)
             await asyncio.sleep(1.0)
