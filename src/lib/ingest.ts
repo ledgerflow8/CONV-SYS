@@ -7,7 +7,7 @@ import { audit } from "@/lib/audit";
 import { fail, isUniqueViolation, type Result } from "@/lib/action-result";
 import type { CurrentUser } from "@/lib/auth/session";
 import { isBlockedDomain, normalizeDomain } from "@/lib/clicks";
-import { countryFromPhone, decide, isFinal } from "@/lib/qualify";
+import { AI_TIER1, countryFromPhone, decide, isFinal } from "@/lib/qualify";
 import { getAllSettings } from "@/lib/settings";
 import type { Settings } from "@/lib/settings-defaults";
 import { matchTgAccount } from "@/lib/match-account";
@@ -41,6 +41,9 @@ export const convoEventSchema = z
     firstMsgAt: isoDate,
     repliedAt: optional(isoDate),
     source: optional(z.string().trim().max(253)),
+    // Capitalbot's tier verdict, sent only when the fan's phone is hidden: "T1" = a normal AI
+    // reply (Tier 1, AI verified), "NON_T1" = tierFiltered (reject as non_tier1).
+    tier: optional(z.enum(["T1", "NON_T1"])),
   })
   .superRefine((e, ctx) => {
     // Runs even when a field already failed; only check dates that actually parsed.
@@ -170,6 +173,10 @@ async function ingestOnce(
   const repliedAt = existing?.repliedAt ?? e.repliedAt ?? null;
   const peerPhone = existing?.peerPhone ?? e.peerPhone ?? null;
   const eventSource = existing?.source ?? e.source ?? null;
+  // Capitalbot's tier verdict. A later event may omit it; keep the one already applied (stored as
+  // countrySource CAPITALBOT) so a merge or Retry can't drop an AI-verified Tier 1.
+  const priorAiTier = existing?.countrySource === "CAPITALBOT" ? (existing.country === AI_TIER1 ? "T1" : "NON_T1") : undefined;
+  const aiTier = e.tier ?? priorAiTier ?? null;
 
   // A decided convo never changes outcome: it counts exactly once.
   if (existing && isFinal(existing.status)) {
@@ -221,6 +228,15 @@ async function ingestOnce(
     country = click.country;
     countrySource = "CLICK";
   }
+  // Phone hidden and no matched click: fall back to Capitalbot's tier verdict (AI verified).
+  let aiNonTier1 = false;
+  if (!country && aiTier === "T1") {
+    country = AI_TIER1;
+    countrySource = "CAPITALBOT";
+  } else if (!country && aiTier === "NON_T1") {
+    countrySource = "CAPITALBOT";
+    aiNonTier1 = true;
+  }
 
   // 5. Source: a blocked click, or a source domain the event itself reports.
   const reportedDomain = normalizeDomain(eventSource ?? "");
@@ -235,6 +251,7 @@ async function ingestOnce(
     tier1: settings.tier1Countries,
     blockedSource,
     replied: !!repliedAt,
+    aiNonTier1,
   });
 
   let qualified: { weekId: string; qualifiedAt: Date; cents: ReturnType<typeof rateSnapshot> } | null = null;
@@ -343,6 +360,7 @@ export async function retryConvo(actor: CurrentUser, convoId: string): Promise<R
       firstMsgAt: c.firstMsgAt.toISOString(),
       repliedAt: c.repliedAt?.toISOString(),
       source: c.source,
+      tier: c.countrySource === "CAPITALBOT" ? (c.country === AI_TIER1 ? "T1" : "NON_T1") : undefined,
     },
     { via: "retry", actorId: actor.id },
   );

@@ -74,6 +74,51 @@ describe("ingestConvoEvent: qualification", () => {
     expect(await db.auditLog.count({ where: { action: "convo.status", target: a.convoId } })).toBe(1);
   });
 
+  it("AI-verified Tier 1 (phone hidden) qualifies with countrySource CAPITALBOT", async () => {
+    const t = await makeTeam();
+    const out = await ingest({
+      tgAccount: t.account.username,
+      peerId: "p",
+      firstMsgAt: minutesAgo(10).toISOString(),
+      repliedAt: minutesAgo(2).toISOString(),
+      tier: "T1",
+    });
+    expect(out.status).toBe("QUALIFIED");
+    const c = await db.convo.findUniqueOrThrow({ where: { id: out.convoId } });
+    expect(c).toMatchObject({ country: "T1", countrySource: "CAPITALBOT" });
+  });
+
+  it("tierFiltered (phone hidden) rejects as non_tier1 even with no reply", async () => {
+    const t = await makeTeam();
+    const out = await ingest({ tgAccount: t.account.username, peerId: "p", firstMsgAt: minutesAgo(10).toISOString(), tier: "NON_T1" });
+    expect(out).toMatchObject({ status: "REJECTED", reason: "non_tier1" });
+    expect((await db.convo.findUniqueOrThrow({ where: { id: out.convoId } })).countrySource).toBe("CAPITALBOT");
+  });
+
+  it("a visible phone overrides the AI tier verdict", async () => {
+    const t = await makeTeam();
+    const out = await ingest({
+      tgAccount: t.account.username,
+      peerId: "p",
+      peerPhone: "+1 415 555 0100",
+      firstMsgAt: minutesAgo(10).toISOString(),
+      repliedAt: minutesAgo(2).toISOString(),
+      tier: "NON_T1",
+    });
+    expect(out.status).toBe("QUALIFIED"); // phone says US (Tier 1); the NON_T1 verdict is ignored
+    expect(await db.convo.findUniqueOrThrow({ where: { id: out.convoId } })).toMatchObject({ country: "US", countrySource: "PHONE" });
+  });
+
+  it("a pending first message then a tierFiltered verdict rejects the same row", async () => {
+    const t = await makeTeam();
+    const base = { tgAccount: t.account.username, peerId: "p", firstMsgAt: minutesAgo(20).toISOString() };
+    const a = await ingest(base);
+    expect(a.status).toBe("PENDING");
+    const b = await ingest({ ...base, tier: "NON_T1" });
+    expect(b).toMatchObject({ convoId: a.convoId, status: "REJECTED", reason: "non_tier1" });
+    expect(await db.convo.count()).toBe(1);
+  });
+
   it("refuses bad input", async () => {
     const t = await makeTeam();
     const bad = [

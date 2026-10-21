@@ -93,6 +93,9 @@ class AiEngine:
         self._chat_locks: dict[tuple[int, str], asyncio.Lock] = {}
         self.credit_over_until: datetime | None = None
         self.last_error: str | None = None
+        # set by main.lifespan to Service.report_ai_outcome; reports the chat's convo state (and a
+        # tierFiltered verdict that sends no reply) to the portal after each turn.
+        self.report_ai_outcome = None  # type: ignore[assignment]
 
     # ── scheduling ────────────────────────────────────────────────────────────
     def notify(self, account_id: int, peer_id: str) -> None:
@@ -160,6 +163,10 @@ class AiEngine:
         answered = await self._apply(account_id, peer_id, resp, uploaded=bool(file_path), out_before=req["out_before"])
         if resp.has_content and not answered and self.manager.is_connected(account_id):
             await self._send(account_id, peer_id, resp)
+        # Report the convo outcome to the portal — crucially, a tierFiltered verdict sends no reply,
+        # so this is the only path that reports it (→ rejected non_tier1 instead of stuck Pending).
+        if self.report_ai_outcome is not None:
+            await self.report_ai_outcome(account_id, peer_id)
 
     async def _gather(self, account_id: int, peer_id: str) -> dict | None:
         """Re-check eligibility against fresh state and assemble the request inputs."""

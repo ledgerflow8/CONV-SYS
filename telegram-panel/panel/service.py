@@ -30,6 +30,22 @@ def _later(a: datetime | None, b: datetime | None) -> datetime | None:
         return a
     return a if a >= b else b
 
+
+def _ai_tier(chat: Chat) -> str | None:
+    """Capitalbot's tier verdict for this chat, read from AI state we already store (no new column).
+    'T1'     = Capitalbot engaged this fan normally (it has a conversation and didn't tier-filter);
+    'NON_T1' = Capitalbot tier-filtered them;
+    None     = no verdict, so the portal falls back to phone / click / review.
+    The portal trusts this only when the fan's phone is hidden."""
+    if chat.ai_state_reason == "tierFiltered":
+        return "NON_T1"
+    if chat.ai_state == "filtered":
+        return None  # genderFiltered / ignored / messagedAlready / internalAccount — not a tier call
+    if chat.capital_conversation_id is not None:
+        return "T1"
+    return None
+
+
 log = logging.getLogger("panel.service")
 
 
@@ -115,7 +131,15 @@ class Service:
                     chat.first_reply_at = first_reply
 
             # First reply at or after the first inbound (AI or typed by hand).
-            if msg.out and chat.first_in_at is not None and chat.first_reply_at is None and msg.at >= chat.first_in_at:
+            if msg.out and chat.first_in_at is None:
+                # We saw our reply before any inbound event (e.g. connected mid-chat). Backfill the
+                # real start from history — but only if the fan actually messaged first, so a cold
+                # outreach never becomes a convo. This keeps a replied convo from staying Pending.
+                first_in, first_reply = await self._dialog_firsts_raw(account_id, msg.peer.peer_id)
+                if first_in is not None:
+                    chat.first_in_at = first_in
+                    chat.first_reply_at = chat.first_reply_at or first_reply or msg.at
+            elif msg.out and chat.first_in_at is not None and chat.first_reply_at is None and msg.at >= chat.first_in_at:
                 chat.first_reply_at = msg.at
 
             await self._report_chat(session, acc, chat)
@@ -185,15 +209,19 @@ class Service:
             await session.flush()
         return chat
 
-    async def _dialog_firsts(self, account_id: int, peer_id: str, fallback: datetime) -> tuple[datetime, datetime | None]:
+    async def _dialog_firsts_raw(self, account_id: int, peer_id: str) -> tuple[datetime | None, datetime | None]:
+        """(first inbound, first reply) straight from Telegram history, or (None, None)."""
         client = self.manager.get(account_id)
         if client is not None:
             try:
-                first_in, first_reply = await client.dialog_firsts(int(peer_id))
-                return (first_in or fallback), first_reply
+                return await client.dialog_firsts(int(peer_id))
             except Exception:
                 log.exception("dialog_firsts failed for account %s peer %s", account_id, peer_id)
-        return fallback, None
+        return None, None
+
+    async def _dialog_firsts(self, account_id: int, peer_id: str, fallback: datetime) -> tuple[datetime, datetime | None]:
+        first_in, first_reply = await self._dialog_firsts_raw(account_id, peer_id)
+        return (first_in or fallback), first_reply
 
     async def _report_chat(self, session: AsyncSession, acc: Account, chat: Chat) -> None:
         """Enqueue the convo events this chat is now due. Reporting is independent of the AI toggle."""
@@ -203,8 +231,29 @@ class Service:
             await portal.enqueue_convo(session, tg_account, tg_user_id, chat, with_reply=False)
             chat.reported_first = True
         if chat.first_reply_at is not None and not chat.reported_reply:
-            await portal.enqueue_convo(session, tg_account, tg_user_id, chat, with_reply=True)
+            # A reply from Capitalbot carries its "Tier 1 (AI verified)" verdict, used when no phone.
+            await portal.enqueue_convo(session, tg_account, tg_user_id, chat, with_reply=True, tier=_ai_tier(chat))
             chat.reported_reply = True
+
+    async def report_ai_outcome(self, account_id: int, peer_id: str) -> None:
+        """Called after an AI turn (wired from ai.py). Makes sure the portal has this chat's convo
+        state, including a Capitalbot tier verdict that produced no reply (tierFiltered → non_tier1),
+        which the first/reply events can't carry."""
+        async with self.sessionmaker() as session:
+            acc = await session.get(Account, account_id)
+            if acc is None:
+                return
+            chat = await session.scalar(select(Chat).where(Chat.account_id == account_id, Chat.peer_id == peer_id))
+            if chat is None:
+                return
+            await self._report_chat(session, acc, chat)  # first / reply (the reply event carries a T1 verdict)
+            if chat.first_in_at is not None and _ai_tier(chat) == "NON_T1":
+                # tierFiltered sends no reply, so the verdict rides its own event. Reported once: the
+                # chat is now 'filtered' and won't be called again, so this runs a single time.
+                await portal.enqueue_convo(
+                    session, acc.username or str(acc.tg_user_id), str(acc.tg_user_id), chat, with_reply=False, tier="NON_T1", suffix="tier"
+                )
+            await session.commit()
 
     async def _enqueue_status(self, session: AsyncSession, acc: Account) -> None:
         portal_status = _PORTAL_STATUS.get(acc.status)

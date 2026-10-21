@@ -42,6 +42,7 @@ enum CountrySrc {
   CLICK
   MANUAL
   UNKNOWN
+  CAPITALBOT // Capitalbot verified the fan's tier when their phone was hidden (country "T1")
 }
 
 enum WeekStatus {

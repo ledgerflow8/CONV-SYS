@@ -173,6 +173,12 @@ export default async function ConvosPage({ searchParams }: { searchParams: Promi
   );
 }
 
+/** Country/source line. Capitalbot's tier verdict shows as plain words, not a raw country code. */
+function countryLabel(c: Prisma.ConvoGetPayload<{ select: typeof convoSelect }>): string {
+  if (c.countrySource === "CAPITALBOT") return c.country ? "Tier 1 (AI verified)" : "Not Tier 1 (AI)";
+  return c.country ? `${c.country} (${c.countrySource.toLowerCase()})` : "??";
+}
+
 function ConvoLine({ c, tz }: { c: Prisma.ConvoGetPayload<{ select: typeof convoSelect }>; tz: string }) {
   const reason = c.rejectReason ?? c.reviewReason;
   return (
@@ -182,8 +188,7 @@ function ConvoLine({ c, tz }: { c: Prisma.ConvoGetPayload<{ select: typeof convo
           @{c.accountRef} · peer {c.peerId}
         </p>
         <p className="truncate text-xs text-muted-foreground">
-          {c.va ? `VA @${c.va.username}` : "No VA"} · {c.country ?? "??"}
-          {c.country && ` (${c.countrySource.toLowerCase()})`}
+          {c.va ? `VA @${c.va.username}` : "No VA"} · {countryLabel(c)}
           {c.source && ` · ${c.source}`}
         </p>
         <p className="text-xs text-muted-foreground">
