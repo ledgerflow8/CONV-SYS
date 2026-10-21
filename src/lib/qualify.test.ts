@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { countryFromPhone, decide, isFinal, type DecisionInput } from "./qualify";
+import { AI_TIER1, countryFromPhone, decide, isFinal, type DecisionInput } from "./qualify";
 
 const TIER1 = ["US", "CA", "GB", "AU", "NZ", "IE"];
 const base: DecisionInput = {
@@ -46,6 +46,25 @@ describe("decide", () => {
 
   it("uses the configured Tier 1 list, not a hard-coded one", () => {
     expect(decide({ ...base, country: "DE", tier1: [...TIER1, "DE"] })).toEqual({ status: "QUALIFIED" });
+  });
+});
+
+describe("Capitalbot tier verdict (phone hidden)", () => {
+  it("AI-verified Tier 1 qualifies, though 'T1' isn't a real country in the list", () => {
+    expect(decide({ ...base, country: AI_TIER1 })).toEqual({ status: "QUALIFIED" });
+  });
+
+  it("AI-verified Tier 1 still needs a VA holding the account", () => {
+    expect(decide({ ...base, country: AI_TIER1, attributed: false })).toEqual({ status: "REVIEW", reviewReason: "unattributed" });
+  });
+
+  it("tierFiltered rejects as non_tier1 immediately, with no reply", () => {
+    expect(decide({ ...base, country: null, aiNonTier1: true, replied: false })).toEqual({ status: "REJECTED", rejectReason: "non_tier1" });
+  });
+
+  it("a known phone country wins over the AI verdict", () => {
+    expect(decide({ ...base, country: "NG", aiNonTier1: false })).toEqual({ status: "REJECTED", rejectReason: "non_tier1" });
+    expect(decide({ ...base, country: "US", aiNonTier1: true })).toEqual({ status: "QUALIFIED" });
   });
 });
 

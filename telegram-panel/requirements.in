@@ -7,5 +7,5 @@ httpx
 cryptography
 argon2-cffi
 itsdangerous
-telethon
+telethon==1.45.0  # newest on PyPI (layer 229); unreadable newer-layer updates are handled by auto-reconnect in service.py, not a version bump
 python-multipart

@@ -13,6 +13,14 @@ from telethon.sessions import StringSession
 
 TELEGRAM_SERVICE_ID = 777000  # login codes etc.; never a fan
 
+# Telegram sometimes sends updates from a newer API layer than our Telethon understands. A single
+# such update is skipped by Telethon's receive loop, but one that lands in a getDifference response
+# makes Telethon tear the connection down (client/updates.py). We classify it as a transient error
+# with a human message (never the raw "Could not find a matching Constructor ID…") so the service
+# reconnects instead of parking the account Off. A fresh StringSession connection re-baselines on
+# getState and skips the unreadable backlog, so the reconnect sticks.
+UNREADABLE_UPDATE_DETAIL = "Telegram sent data from a newer app version — reconnecting."
+
 DEFAULT_DEVICE = {
     "device_model": "Desktop",
     "system_version": "Windows 10",
@@ -91,6 +99,12 @@ class TgError(Exception):
     def dead(self) -> bool:
         return self.status in ("revoked", "banned")
 
+    @property
+    def leave_alone(self) -> bool:
+        """Terminal states the panel must not reconnect: a dead session (banned/revoked) or a
+        frozen account. Everything else (network, timeout, unreadable update) is transient."""
+        return self.status in ("revoked", "banned", "frozen")
+
 
 def classify(e: BaseException) -> TgError:
     if isinstance(e, TgError):
@@ -112,6 +126,9 @@ def classify(e: BaseException) -> TgError:
     _frozen = tuple(t for t in (getattr(errors, n, None) for n in ("UserRestrictedError", "PeerFloodError", "FrozenError", "FrozenMethodInvalidError")) if isinstance(t, type))
     if "FROZEN" in f"{raw} {e}".upper() or (_frozen and isinstance(e, _frozen)):
         return TgError("frozen", "Account is frozen or write-restricted by Telegram", raw)
+    # An update/difference Telethon can't deserialize (newer Telegram layer). Transient: reconnect.
+    if isinstance(e, errors.TypeNotFoundError):
+        return TgError("error", UNREADABLE_UPDATE_DETAIL, raw)
     if isinstance(e, (asyncio.TimeoutError, ConnectionError, OSError)):
         return TgError("error", "Couldn't reach Telegram", raw)
     return TgError("error", f"{type(e).__name__}: {e}"[:300], raw)

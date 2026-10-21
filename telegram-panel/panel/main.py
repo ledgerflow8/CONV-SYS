@@ -72,6 +72,7 @@ def create_app(settings: Settings | None = None, dist: Path = DIST, client_facto
             app.state.capital = capital
             engine_ai = AiEngine(sessionmaker, manager, capital, app.state.crypto, settings.data_dir, http)
             engine_ai.service_record = app.state.service.record_ai_message
+            engine_ai.report_ai_outcome = app.state.service.report_ai_outcome
             app.state.service.ai = engine_ai
             app.state.ai = engine_ai
             await app.state.service.connect_powered_on()
@@ -79,6 +80,7 @@ def create_app(settings: Settings | None = None, dist: Path = DIST, client_facto
             try:
                 yield
             finally:
+                await app.state.service.cancel_all_reconnects()  # stop background retries first
                 await manager.shutdown()  # disconnect every client; never log out
                 await engine_ai.shutdown()
                 for task in list(app.state.background):

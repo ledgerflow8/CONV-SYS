@@ -137,6 +137,15 @@ def fake_client(c, account_id):
     return c.app.state.service.manager.get(account_id)
 
 
+def convos(c):
+    async def _q():
+        async with c.app.state.sessionmaker() as s:
+            rows = (await s.scalars(select(OutboxItem).where(OutboxItem.kind == "convo").order_by(OutboxItem.id))).all()
+            return [dict(r.payload) for r in rows]
+
+    return run(c, _q)
+
+
 def activities(c):
     async def _q():
         async with c.app.state.sessionmaker() as s:
@@ -345,6 +354,35 @@ def test_fan_message_triggers_a_debounced_reply(client, directory):
 
     run(client, _wait)
     assert any(s.get("text") == "auto reply" for s in fake_client(client, acc).sent)
+
+
+# ── Capitalbot tier verdict → portal convo tier (phone hidden; client feedback 2026-10-21) ──
+def test_engaged_reply_reports_tier1_ai_verified(client, directory):
+    acc = setup(client, directory, 91, 9200, "tiera")
+    set_capital(client, FakeCapital(cresp(texts=["hey!"], conversation_id=55)))
+    deliver(client, acc, IncomingMessage(fan(), tg_msg_id=1, out=False, kind="text", text="hi", at=at(9)))
+    run_turn(client, acc)
+    reply = [p for p in convos(client) if "repliedAt" in p]
+    assert reply and reply[0]["tier"] == "T1"  # a normal AI reply → Tier 1 (AI verified)
+
+
+def test_tierfiltered_reports_non_tier1_without_a_reply(client, directory):
+    acc = setup(client, directory, 92, 9300, "tierb")
+    set_capital(client, FakeCapital(cresp(tierFiltered=True)))
+    deliver(client, acc, IncomingMessage(fan(), tg_msg_id=1, out=False, kind="text", text="hi", at=at(9)))
+    run_turn(client, acc)
+    assert fake_client(client, acc).sent == []  # tierFiltered sends nothing
+    tier_evts = [p for p in convos(client) if p.get("tier") == "NON_T1"]
+    assert tier_evts and "repliedAt" not in tier_evts[0]  # reported as a rejection even with no reply
+
+
+def test_genderfiltered_sends_no_tier_verdict(client, directory):
+    # Not a tier decision: the portal should fall back to phone/review, never auto-qualify or reject.
+    acc = setup(client, directory, 93, 9400, "tierc")
+    set_capital(client, FakeCapital(cresp(genderFiltered=True)))
+    deliver(client, acc, IncomingMessage(fan(), tg_msg_id=1, out=False, kind="text", text="hi", at=at(9)))
+    run_turn(client, acc)
+    assert all("tier" not in p for p in convos(client))
 
 
 # ── overrides are never sent to Capitalbot (client decision 2026-10-17) ──────

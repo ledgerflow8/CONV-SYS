@@ -35,6 +35,7 @@ class FakeClient:
         self._params = params
         self._fake = directory.by_session.get(params.session)
         self._disconnected: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._drop_err: TgError | None = None
         self.logged_out = False
         self.sent: list[dict] = []  # what the AI worker sent through this client
         self.read_marked = 0
@@ -76,7 +77,14 @@ class FakeClient:
 
     async def wait_disconnected(self):
         await self._disconnected
-        return None
+        return self._drop_err
+
+    async def drop(self, err: TgError | None = None) -> None:
+        """Test helper: simulate the live connection dropping on its own (optionally with an error),
+        the way Telethon would on a ban, a network loss, or an unreadable update."""
+        self._drop_err = err
+        if not self._disconnected.done():
+            self._disconnected.set_result(None)
 
     def session_string(self) -> str:
         return self._params.session
