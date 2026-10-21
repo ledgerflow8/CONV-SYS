@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from panel import portal
 from panel.accounts import AccountManager
 from panel.crypto import Crypto
-from panel.models import Account, Activity, Chat, Message, utcnow
+from panel.models import Account, Activity, Chat, Lead, Message, Profile, utcnow
 from panel.tg.client import AccountInfo, ConnectParams, IncomingMessage, TgError
 
 # Internal account status → the portal's account_status enum (PLAN.md §4.4).
@@ -253,7 +253,48 @@ class Service:
                 await portal.enqueue_convo(
                     session, acc.username or str(acc.tg_user_id), str(acc.tg_user_id), chat, with_reply=False, tier="NON_T1", suffix="tier"
                 )
+            if chat.ai_state == "converted":
+                await self._ensure_lead(session, acc, chat)  # record the converted fan for the Leads export
             await session.commit()
+
+    async def _ensure_lead(self, session: AsyncSession, acc: Account, chat: Chat, converted_at: datetime | None = None) -> bool:
+        """Record a converted fan once (idempotent per account+fan). Returns True if it created a row."""
+        exists = await session.scalar(select(Lead.id).where(Lead.account_id == acc.id, Lead.fan_user_id == chat.peer_id))
+        if exists is not None:
+            return False
+        profile = await session.get(Profile, acc.profile_id) if acc.profile_id else None
+        session.add(
+            Lead(
+                account_id=acc.id,
+                fan_user_id=chat.peer_id,
+                fan_username=chat.peer_username,
+                fan_name=chat.peer_name,
+                fan_phone=chat.peer_phone,
+                first_msg_at=chat.first_in_at,
+                converted_at=converted_at or utcnow(),
+                profile_name=profile.name if profile else None,
+                capital_model_id=profile.capital_model_id if profile else None,
+                capital_preset_id=profile.capital_preset_id if profile else None,
+            )
+        )
+        return True
+
+    async def backfill_leads(self) -> int:
+        """One-time (idempotent) sweep: make a Lead for every already-converted chat that has none,
+        using the chat's last activity as the best estimate of the conversion time."""
+        async with self.sessionmaker() as session:
+            chats = (await session.scalars(select(Chat).where(Chat.ai_state == "converted"))).all()
+            made = 0
+            for chat in chats:
+                acc = await session.get(Account, chat.account_id)
+                if acc is None:
+                    continue
+                est = chat.last_out_at or chat.first_reply_at or chat.first_in_at or utcnow()
+                if await self._ensure_lead(session, acc, chat, converted_at=est):
+                    made += 1
+            if made:
+                await session.commit()
+            return made
 
     async def _enqueue_status(self, session: AsyncSession, acc: Account) -> None:
         portal_status = _PORTAL_STATUS.get(acc.status)

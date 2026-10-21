@@ -248,6 +248,7 @@ const METRICS = [
   ["new_chats", "New chats"],
   ["ai_replies", "AI replies"],
   ["convos_reported", "Convos reported"],
+  ["converted", "Converted"],
 ];
 
 export function StatsBlock({ stats }) {

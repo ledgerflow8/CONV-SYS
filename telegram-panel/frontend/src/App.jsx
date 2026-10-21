@@ -6,12 +6,14 @@ import Login from "./pages/Login.jsx";
 import Accounts from "./pages/Accounts.jsx";
 import Add from "./pages/Add.jsx";
 import Personas from "./pages/Personas.jsx";
+import Leads from "./pages/Leads.jsx";
 import Status from "./pages/Status.jsx";
 
 export const NAV = [
   { href: "/accounts", label: "Accounts", emoji: "📱" },
   { href: "/add", label: "Add accounts", emoji: "➕" },
   { href: "/personas", label: "Personas", emoji: "🎭" },
+  { href: "/leads", label: "Leads", emoji: "⭐" },
   { href: "/status", label: "Status", emoji: "📡" },
 ];
 
@@ -19,6 +21,7 @@ const PAGES = {
   "/accounts": () => <Accounts />,
   "/add": () => <Add />,
   "/personas": () => <Personas />,
+  "/leads": () => <Leads />,
   "/status": () => <Status />,
 };
 

@@ -24,6 +24,7 @@ from panel.portal import OutboxWorker, PortalConfig
 from panel.routes import accounts as account_routes
 from panel.routes import auth as auth_routes
 from panel.routes import imports as import_routes
+from panel.routes import leads as lead_routes
 from panel.routes import profiles as profile_routes
 from panel.routes import system as system_routes
 from panel.service import Service
@@ -75,6 +76,7 @@ def create_app(settings: Settings | None = None, dist: Path = DIST, client_facto
             engine_ai.report_ai_outcome = app.state.service.report_ai_outcome
             app.state.service.ai = engine_ai
             app.state.ai = engine_ai
+            await app.state.service.backfill_leads()  # one-time (idempotent): leads from already-converted chats
             await app.state.service.connect_powered_on()
             app.state.background.add(asyncio.create_task(worker.run()))
             try:
@@ -115,6 +117,7 @@ def create_app(settings: Settings | None = None, dist: Path = DIST, client_facto
     app.include_router(account_routes.router)
     app.include_router(import_routes.router)
     app.include_router(profile_routes.router)
+    app.include_router(lead_routes.router)
     app.include_router(system_routes.router)
 
     @app.get("/healthz")

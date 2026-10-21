@@ -379,23 +379,39 @@ class TelethonClient:
         except Exception as e:
             raise classify(e) from e
 
+    async def _delete_all_profile_photos(self) -> None:
+        """Remove the account's whole profile-photo history (Telegram keeps every past photo)."""
+        photos = await self._c.get_profile_photos("me", limit=200)
+        inputs = [types.InputPhoto(id=p.id, access_hash=p.access_hash, file_reference=p.file_reference) for p in photos]
+        if inputs:
+            await self._c(functions.photos.DeletePhotosRequest(inputs))
+
+    async def _profile_photo_count(self) -> int:
+        return len(await self._c.get_profile_photos("me", limit=200))
+
     async def set_profile_photo(self, path: str) -> None:
+        # A TRUE replace: wipe the photo history first, then upload the new one. Otherwise Telegram
+        # keeps the old photos and they reappear in the carousel ("adding a photo brings the old ones back").
         try:
+            await self._delete_all_profile_photos()
             uploaded = await self._c.upload_file(path)
             await self._c(functions.photos.UploadProfilePhotoRequest(file=uploaded))
+            remaining = await self._profile_photo_count()
         except Exception as e:
             raise classify(e) from e
+        if remaining != 1:
+            raise TgError("photo_failed", f"Couldn't replace the photo cleanly — Telegram still shows {remaining}. Try again.")
 
     async def delete_profile_photo(self) -> None:
         # Delete ALL profile photos, not just the latest — otherwise Telegram promotes the previous one
         # and the avatar appears unchanged ("Remove photo did nothing").
         try:
-            photos = await self._c.get_profile_photos("me", limit=100)
-            inputs = [types.InputPhoto(id=p.id, access_hash=p.access_hash, file_reference=p.file_reference) for p in photos]
-            if inputs:
-                await self._c(functions.photos.DeletePhotosRequest(inputs))
+            await self._delete_all_profile_photos()
+            remaining = await self._profile_photo_count()
         except Exception as e:
             raise classify(e) from e
+        if remaining != 0:
+            raise TgError("photo_failed", f"Couldn't remove the photo — Telegram still shows {remaining}. Try again.")
 
     def on_private_message(self, cb: MessageCallback) -> None:
         async def handler(event: events.NewMessage.Event) -> None:

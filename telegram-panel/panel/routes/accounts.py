@@ -213,23 +213,27 @@ def _since(period: str) -> "datetime | None":
 
 
 async def _stat_counts(session, account_id: int | None, since) -> dict:
-    from panel.models import Message
+    from panel.models import Lead, Message
 
     chat_where = [Chat.first_in_at.is_not(None)]
     reply_where = [Chat.reported_reply.is_(True), Chat.first_reply_at.is_not(None)]
     msg_where = [Message.sender == "ai"]
+    lead_where: list = []
     if account_id is not None:
         chat_where.append(Chat.account_id == account_id)
         reply_where.append(Chat.account_id == account_id)
         msg_where.append(Message.account_id == account_id)
+        lead_where.append(Lead.account_id == account_id)
     if since is not None:
         chat_where.append(Chat.first_in_at >= since)
         reply_where.append(Chat.first_reply_at >= since)
         msg_where.append(Message.at >= since)
+        lead_where.append(Lead.converted_at >= since)
     new_chats = await session.scalar(select(func.count()).select_from(Chat).where(*chat_where))
     convos = await session.scalar(select(func.count()).select_from(Chat).where(*reply_where))
     replies = await session.scalar(select(func.count()).select_from(Message).where(*msg_where))
-    return {"new_chats": new_chats or 0, "ai_replies": replies or 0, "convos_reported": convos or 0}
+    converted = await session.scalar(select(func.count()).select_from(Lead).where(*lead_where))
+    return {"new_chats": new_chats or 0, "ai_replies": replies or 0, "convos_reported": convos or 0, "converted": converted or 0}
 
 
 async def account_stats(session, account_id: int | None) -> dict:

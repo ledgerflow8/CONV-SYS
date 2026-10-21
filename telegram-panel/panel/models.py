@@ -139,6 +139,28 @@ class Message(Base):
     at: Mapped[datetime] = mapped_column(UTCDateTime, index=True)
 
 
+class Lead(Base):
+    """A fan Capitalbot reported as converted — one row per (account, fan). The Leads export source.
+    Profile model/preset are snapshotted at conversion time so a later persona change can't rewrite
+    history; account username and the t.me link are derived live from the account/fan on read."""
+
+    __tablename__ = "leads"
+    __table_args__ = (UniqueConstraint("account_id", "fan_user_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    fan_user_id: Mapped[str] = mapped_column(String(32))  # the fan's Telegram id (= chat.peer_id)
+    fan_username: Mapped[str | None] = mapped_column(String(64))
+    fan_name: Mapped[str | None] = mapped_column(String(256))
+    fan_phone: Mapped[str | None] = mapped_column(String(32))  # only when the fan shares it
+    first_msg_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    converted_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, index=True)
+    profile_name: Mapped[str | None] = mapped_column(String(100))
+    capital_model_id: Mapped[int | None] = mapped_column(Integer)
+    capital_preset_id: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
 class OutboxItem(Base):
     """Everything bound for the portal. Signed at send time, never at enqueue time."""
 
