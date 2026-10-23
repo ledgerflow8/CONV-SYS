@@ -3,6 +3,7 @@
 // TgStatus or VA assignments and never notify. A real ban stays a human action in the pool UI.
 import { z } from "zod";
 import { db } from "@/lib/db";
+import { refillWaitingVas } from "@/lib/org";
 import { isUniqueViolation } from "@/lib/action-result";
 import { matchTgAccount } from "@/lib/match-account";
 
@@ -103,6 +104,8 @@ export async function renameAccount(raw: unknown): Promise<{ ok: true; data: Acc
     if (isUniqueViolation(err)) return { ok: false, error: `username @${username} is already used by another account` };
     throw err;
   }
+  // An account that just got its first username becomes claimable: give it to a waiting VA.
+  if (!account.username) await refillWaitingVas(account.modelId);
   return { ok: true, data: { recorded: true } };
 }
 
@@ -122,7 +125,7 @@ export async function registerAccount(raw: unknown): Promise<{ ok: true; data: A
 
   const existing = await db.tgAccount.findFirst({
     where: { OR: [{ tgUserId }, ...(username ? [{ username }] : [])] },
-    select: { id: true },
+    select: { id: true, username: true, modelId: true },
   });
   try {
     if (existing) {
@@ -136,6 +139,7 @@ export async function registerAccount(raw: unknown): Promise<{ ok: true; data: A
     if (isUniqueViolation(err)) return { ok: false, error: "account conflicts with an existing username/id" };
     throw err;
   }
+  if (existing && !existing.username && username) await refillWaitingVas(existing.modelId);
   return { ok: true, data: { recorded: true } };
 }
 

@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { fail, isUniqueViolation, type Result } from "@/lib/action-result";
 import type { CurrentUser } from "@/lib/auth/session";
+import { refillWaitingVas } from "@/lib/org";
 import { parsePoolImport, validatePoolRow, type PoolReject } from "@/lib/pool-import";
 
 async function requireActiveModel(modelId: string) {
@@ -25,6 +26,7 @@ export async function addPoolAccount(
       await audit(tx, { actorId: actor.id, action: "tg.add", target: account.id, meta: { username: v.row.username } });
       return account.id;
     });
+    await refillWaitingVas(input.modelId);
     return { ok: true, data: { id } };
   } catch (e) {
     if (isUniqueViolation(e)) return fail(`@${v.row.username} is already in the pool.`);
@@ -72,5 +74,6 @@ export async function importPoolAccounts(
     return count;
   });
 
+  if (added > 0) await refillWaitingVas(input.modelId);
   return { ok: true, data: { added, rejects } };
 }

@@ -39,13 +39,18 @@ export async function notifyUser(userId: string, text: string): Promise<NotifyRe
 }
 
 /** Tells a VA their Telegram account changed (or that none is free yet). */
-export async function notifyAccountChange(vaId: string, reason: "banned" | "retired" | "assigned"): Promise<NotifyResult> {
+export async function notifyAccountChange(vaId: string, reason: "banned" | "retired" | "assigned" | "moved"): Promise<NotifyResult> {
   const va = await db.user.findUnique({
     where: { id: vaId },
     select: { tgAccount: { select: { username: true, phone: true, link: true } }, trackingLink: { select: { slug: true, active: true } } },
   });
   if (!va) return "failed";
-  const why = reason === "assigned" ? "You've been assigned a Telegram account." : "Your Telegram account was taken out of service.";
+  const why =
+    reason === "assigned"
+      ? "You've been assigned a Telegram account."
+      : reason === "moved"
+        ? "Your team now works for a different model, so your Telegram account has changed."
+        : "Your Telegram account was taken out of service.";
   const lines = va.tgAccount
     ? [
         `🔄 ${why}`,

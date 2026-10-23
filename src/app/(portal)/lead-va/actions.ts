@@ -6,7 +6,8 @@ import { fail, type Result } from "@/lib/action-result";
 import { requireRole } from "@/lib/auth/session";
 import type { NotifyResult } from "@/lib/notify";
 import { assignAccountToVa } from "@/lib/reassign";
-import { addVa, fireVa, regenerateInvite, type Invite } from "@/lib/team";
+import { fireUser } from "@/lib/org";
+import { addVa, regenerateInvite, type Invite } from "@/lib/team";
 
 const id = z.string().min(1).max(64);
 
@@ -32,9 +33,9 @@ export async function fireVaAction(vaId: unknown): Promise<Result<null>> {
   const actor = await requireRole("LEAD_VA");
   const parsed = id.safeParse(vaId);
   if (!parsed.success) return fail("Invalid request.");
-  const result = await fireVa(actor, parsed.data);
+  const result = await fireUser(actor, parsed.data);
   revalidatePath("/lead-va");
-  return result;
+  return result.ok ? { ok: true, data: null } : result;
 }
 
 export async function assignAccountAction(vaId: unknown): Promise<Result<{ account: string; notified: NotifyResult }>> {

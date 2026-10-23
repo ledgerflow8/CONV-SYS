@@ -4,6 +4,7 @@ import { TopBar } from "@/components/shell/top-bar";
 import { requireRole } from "@/lib/auth/session";
 import { db } from "@/lib/db";
 import { scopeFor } from "@/lib/scope";
+import { MoveAllTeamsButton, RenameModel } from "@/components/org-controls";
 import { AddModelForm, ToggleModelButton } from "./model-controls";
 
 export default async function ModelsPage() {
@@ -42,8 +43,9 @@ export default async function ModelsPage() {
           <Card key={m.id} className={m.active ? undefined : "opacity-70"}>
             <CardContent className="flex flex-wrap items-center justify-between gap-3">
               <div className="space-y-1">
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <span className="font-semibold">{m.name}</span>
+                  <RenameModel modelId={m.id} name={m.name} />
                   <StatusBadge status={m.active ? "ACTIVE" : "INACTIVE"} />
                 </div>
                 <p className="text-sm text-muted-foreground">
@@ -51,7 +53,12 @@ export default async function ModelsPage() {
                   {count(m.id, "ASSIGNED")} assigned · {count(m.id, "BANNED")} banned
                 </p>
               </div>
-              <ToggleModelButton modelId={m.id} active={m.active} name={m.name} />
+              <div className="flex flex-wrap items-center gap-2">
+                {teams(m.id) > 0 && (
+                  <MoveAllTeamsButton fromModel={{ id: m.id, name: m.name }} models={models.filter((x) => x.active).map((x) => ({ id: x.id, name: x.name }))} />
+                )}
+                <ToggleModelButton modelId={m.id} active={m.active} name={m.name} />
+              </div>
             </CardContent>
           </Card>
         ))}

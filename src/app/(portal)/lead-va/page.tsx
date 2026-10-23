@@ -11,6 +11,7 @@ import { scopeFor } from "@/lib/scope";
 import { getSetting } from "@/lib/settings";
 import { currentPeriods, inWeek, poolHealth, qualifiedTotals, qualifiedTotalsBy } from "@/lib/stats";
 import { EMPTY_POOL_MESSAGE } from "@/lib/team";
+import { FireInactiveVas } from "@/components/org-controls";
 import { AddVaButton, AssignAccountButton, VaRowActions } from "./team-controls";
 
 export default async function LeadVaDashboard() {
@@ -19,7 +20,7 @@ export default async function LeadVaDashboard() {
   const { week } = await currentPeriods();
 
   const [model, team, teamWeek, byVa, pool, currency] = await Promise.all([
-    user.modelId ? db.model.findUnique({ where: { id: user.modelId }, select: { name: true } }) : null,
+    user.modelId ? db.model.findUnique({ where: { id: user.modelId }, select: { name: true, active: true } }) : null,
     db.user.findMany({
       where: { AND: [scope.user, { role: "VA", parentId: user.id, status: "ACTIVE" }] },
       orderBy: { createdAt: "desc" },
@@ -33,6 +34,7 @@ export default async function LeadVaDashboard() {
   const teamPool = pool.find((p) => p.modelId === user.modelId);
   const available = teamPool?.counts.AVAILABLE ?? 0;
   const poolEmpty = available === 0;
+  const modelInactive = !!model && !model.active;
 
   return (
     <>
@@ -53,8 +55,14 @@ export default async function LeadVaDashboard() {
       </div>
 
       <div className="mb-4 space-y-2">
-        <AddVaButton poolEmpty={poolEmpty} />
-        {poolEmpty && (
+        <AddVaButton poolEmpty={poolEmpty || modelInactive} />
+        {modelInactive && (
+          <p role="status" className="flex gap-2 text-sm text-destructive">
+            <TriangleAlert className="mt-0.5 size-4 shrink-0" />
+            Your team&apos;s model ({model?.name}) is inactive, so you can&apos;t add VAs. Ask your Lead Manager to move the team to an active model.
+          </p>
+        )}
+        {poolEmpty && !modelInactive && (
           <p role="status" className="flex gap-2 text-sm text-destructive">
             <TriangleAlert className="mt-0.5 size-4 shrink-0" />
             {EMPTY_POOL_MESSAGE}
@@ -65,7 +73,7 @@ export default async function LeadVaDashboard() {
       {team.some((v) => !v.tgAccount) && (
         <p role="status" className="mb-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100">
           {team.filter((v) => !v.tgAccount).length} of your VAs {team.filter((v) => !v.tgAccount).length === 1 ? "has" : "have"} no Telegram
-          account. Use <strong>Assign account</strong> on their row{poolEmpty ? " once your Director adds more accounts" : ""}.
+          account. They get one automatically as soon as one is free{poolEmpty ? " (ask your Director to add more)" : ""}, or use <strong>Assign account</strong> on their row.
         </p>
       )}
 
@@ -81,11 +89,12 @@ export default async function LeadVaDashboard() {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="font-medium">@{va.username}</span>
+                      <span className="font-medium">{va.username}</span>
                       {va.telegramUserId === null ? <Badge variant="outline">Invite pending</Badge> : <Badge variant="secondary">Joined</Badge>}
+                      {!va.tgAccount && <Badge variant="destructive">Needs account</Badge>}
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      {va.tgAccount ? `Account @${va.tgAccount.username}` : "No account assigned"} · {byVa.get(va.id)?.convos ?? 0} qualified
+                      {va.tgAccount ? `Account @${va.tgAccount.username ?? "unnamed"}` : "No account yet"} · {byVa.get(va.id)?.convos ?? 0} qualified
                       this week
                     </p>
                   </div>
@@ -95,6 +104,15 @@ export default async function LeadVaDashboard() {
               </li>
             ))}
           </ul>
+        </CardContent>
+      </Card>
+
+      <Card className="mb-4">
+        <CardHeader>
+          <CardTitle className="text-base">Fire inactive VAs</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FireInactiveVas scope="team" />
         </CardContent>
       </Card>
 

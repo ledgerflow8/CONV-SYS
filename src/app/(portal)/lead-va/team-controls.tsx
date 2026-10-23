@@ -175,7 +175,7 @@ export function VaRowActions({ vaId, username, joined }: { vaId: string; usernam
     <div className="flex flex-wrap items-center justify-end gap-2">
       {confirmFire ? (
         <>
-          <span className="text-xs text-muted-foreground">Fire @{username}?</span>
+          <span className="text-xs text-muted-foreground">Fire {username}? Their account goes back to the pool.</span>
           <Button size="sm" variant="destructive" onClick={fire} disabled={pending}>
             {pending ? "…" : "Fire"}
           </Button>
@@ -201,8 +201,8 @@ export function VaRowActions({ vaId, username, joined }: { vaId: string; usernam
           </Button>
           <Button
             size="sm"
-            variant="ghost"
-            className="text-destructive hover:text-destructive"
+            variant="outline"
+            className="border-destructive/50 text-destructive hover:bg-destructive/10 hover:text-destructive"
             onClick={() => setConfirmFire(true)}
             aria-label={`Fire ${username}`}
           >

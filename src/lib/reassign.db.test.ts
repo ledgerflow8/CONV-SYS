@@ -81,13 +81,22 @@ describe("ban / reassign", () => {
     expect((await assignAccountToVa(asActor(otherLva), t.va.id)).ok).toBe(false);
   });
 
-  it("restore puts a banned account back as AVAILABLE; banning twice is refused", async () => {
+  it("restore puts a banned account back as AVAILABLE when nobody is waiting; banning twice is refused", async () => {
     const t = await makeTeam();
+    await makeAccount(t.model.id); // the VA gets this spare on the ban, so nobody is left waiting
     await takeAccountOutOfService(asActor(t.director), t.account.id, "BANNED");
     expect((await takeAccountOutOfService(asActor(t.director), t.account.id, "BANNED")).ok).toBe(false);
     expect((await restoreAccount(asActor(t.director), t.account.id)).ok).toBe(true);
     expect(await db.tgAccount.findUniqueOrThrow({ where: { id: t.account.id } })).toMatchObject({ status: "AVAILABLE", vaId: null });
     expect((await restoreAccount(asActor(t.director), t.account.id)).ok).toBe(false);
+  });
+
+  it("restoring an account gives it straight to a VA who was left waiting for one", async () => {
+    const t = await makeTeam();
+    await takeAccountOutOfService(asActor(t.director), t.account.id, "BANNED"); // empty pool → VA waits
+    expect(await db.tgAccount.findUnique({ where: { vaId: t.va.id } })).toBeNull();
+    await restoreAccount(asActor(t.director), t.account.id);
+    expect(await db.tgAccount.findUniqueOrThrow({ where: { id: t.account.id } })).toMatchObject({ status: "ASSIGNED", vaId: t.va.id });
   });
 
   it("unlinked VA: change still happens, notification reported as not_linked", async () => {

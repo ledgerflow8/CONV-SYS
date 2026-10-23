@@ -6,6 +6,7 @@ import { ROLE_LABEL, ROLES } from "@/lib/auth/roles";
 import { requireRole } from "@/lib/auth/session";
 import { db } from "@/lib/db";
 import { scopeFor } from "@/lib/scope";
+import { FireButton, FireInactiveVas, MoveTeamButton } from "@/components/org-controls";
 import { CreateLeadManager, LeadManagerActions } from "./people-controls";
 
 const DIRECTORY_LIMIT = 100;
@@ -54,12 +55,14 @@ export default async function PeoplePage({ searchParams }: { searchParams: Promi
         role: true,
         status: true,
         telegramHandle: true,
+        modelId: true,
         parent: { select: { username: true } },
         model: { select: { name: true } },
       },
     }),
     db.user.count({ where: directoryWhere }),
   ]);
+  const activeModels = await db.model.findMany({ where: { active: true }, orderBy: { name: "asc" }, select: { id: true, name: true } });
 
   return (
     <>
@@ -77,14 +80,17 @@ export default async function PeoplePage({ searchParams }: { searchParams: Promi
               <li key={lm.id} className="flex flex-wrap items-center justify-between gap-3 px-6 py-3">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="font-medium">@{lm.username}</span>
+                    <span className="font-medium">{lm.username}</span>
                     {lm.status !== "ACTIVE" && <StatusBadge status={lm.status} />}
                   </div>
                   <p className="text-xs text-muted-foreground">
                     {lm._count.children} Lead {lm._count.children === 1 ? "VA" : "VAs"}
                   </p>
                 </div>
-                <LeadManagerActions userId={lm.id} username={lm.username} status={lm.status} />
+                <div className="flex flex-wrap items-center gap-2">
+                  {lm.status !== "FIRED" && <LeadManagerActions userId={lm.id} username={lm.username} status={lm.status} />}
+                  {lm.status === "ACTIVE" && <FireButton targetId={lm.id} username={lm.username} />}
+                </div>
               </li>
             ))}
           </ul>
@@ -124,20 +130,37 @@ export default async function PeoplePage({ searchParams }: { searchParams: Promi
         <ul className="divide-y">
           {directory.length === 0 && <li className="p-4 text-sm text-muted-foreground">Nobody matches.</li>}
           {directory.map((p) => (
-            <li key={p.id} className="flex items-center justify-between gap-3 px-4 py-3">
-              <div className="min-w-0">
-                <span className="font-medium">@{p.username}</span>
-                <p className="truncate text-xs text-muted-foreground">
-                  {ROLE_LABEL[p.role]}
-                  {p.model && ` · ${p.model.name}`}
-                  {p.parent && ` · under @${p.parent.username}`}
-                  {p.telegramHandle && ` · TG @${p.telegramHandle}`}
-                </p>
+            <li key={p.id} className="space-y-2 px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <span className="font-medium">{p.username}</span>
+                  <p className="truncate text-xs text-muted-foreground">
+                    {ROLE_LABEL[p.role]}
+                    {p.model && ` · ${p.model.name}`}
+                    {p.parent && ` · under ${p.parent.username}`}
+                    {p.telegramHandle && ` · TG @${p.telegramHandle}`}
+                  </p>
+                </div>
+                <StatusBadge status={p.status} />
               </div>
-              <StatusBadge status={p.status} />
+              {p.status === "ACTIVE" && p.role !== "DIRECTOR" && (
+                <div className="flex flex-wrap justify-end gap-2">
+                  {p.role === "LEAD_VA" && <MoveTeamButton leadVaId={p.id} username={p.username} modelId={p.modelId} models={activeModels} />}
+                  <FireButton targetId={p.id} username={p.username} />
+                </div>
+              )}
             </li>
           ))}
         </ul>
+      </Card>
+
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle className="text-base">Fire inactive VAs</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <FireInactiveVas scope="all" />
+        </CardContent>
       </Card>
     </>
   );

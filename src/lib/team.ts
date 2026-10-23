@@ -45,6 +45,10 @@ async function issueInvite(tx: Prisma.TransactionClient, userId: string, passwor
 export async function addVa(actor: CurrentUser, rawHandle: string): Promise<Result<Invite>> {
   if (actor.role !== "LEAD_VA") return fail("Only Lead VAs can add VAs.");
   if (!actor.modelId) return fail("Your team has no model yet. Ask your Lead Manager.");
+  const teamModel = await db.model.findUnique({ where: { id: actor.modelId }, select: { name: true, active: true } });
+  if (!teamModel?.active) {
+    return fail(`Your team's model${teamModel ? ` (${teamModel.name})` : ""} is inactive. Ask your Lead Manager to move the team to an active model.`);
+  }
 
   const handle = normalizeHandle(rawHandle);
   const username = portalUsername(rawHandle, "VA");
@@ -147,45 +151,3 @@ export async function regenerateInvite(actor: CurrentUser, vaId: string): Promis
   return { ok: true, data: { username: va.username, token, url: botInviteUrl(token), expiresAt, rehired: false } };
 }
 
-/**
- * Fire: login blocked, tracking link off, assignment ended, account back to the pool.
- * Convos already earned in the open week still pay out (they keep their snapshotted vaId).
- */
-export async function fireVa(actor: CurrentUser, vaId: string): Promise<Result<null>> {
-  if (actor.role !== "LEAD_VA") return fail("Only Lead VAs can fire VAs.");
-
-  try {
-    await db.$transaction(async (tx) => {
-      // Conditional update doubles as the authorisation check and makes double-fires a no-op.
-      const fired = await tx.user.updateMany({
-        where: { id: vaId, role: "VA", status: "ACTIVE", parentId: actor.id },
-        data: { status: "FIRED", firedAt: new Date(), sessionVersion: { increment: 1 } },
-      });
-      if (fired.count === 0) throw new Abort("VA not found.");
-
-      await tx.trackingLink.updateMany({ where: { vaId }, data: { active: false } });
-      await tx.inviteToken.updateMany({
-        where: { userId: vaId, usedAt: null },
-        data: { expiresAt: new Date(), passwordEnc: null },
-      });
-
-      const account = await tx.tgAccount.findUnique({ where: { vaId }, select: { id: true, status: true } });
-      if (account) {
-        await tx.tgAssignment.updateMany({
-          where: { tgAccountId: account.id, vaId, endedAt: null },
-          data: { endedAt: new Date(), endReason: "fired" },
-        });
-        // A banned account stays banned; only a healthy one goes back to the pool.
-        await tx.tgAccount.update({
-          where: { id: account.id },
-          data: { vaId: null, ...(account.status === "ASSIGNED" ? { status: "AVAILABLE" } : {}) },
-        });
-      }
-      await audit(tx, { actorId: actor.id, action: "va.fire", target: vaId, meta: { tgAccountId: account?.id ?? null } });
-    });
-    return { ok: true, data: null };
-  } catch (e) {
-    if (e instanceof Abort) return fail(e.message);
-    throw e;
-  }
-}

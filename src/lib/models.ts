@@ -37,3 +37,29 @@ export async function setModelActive(actor: CurrentUser, modelId: string, active
   });
   return { ok: true, data: null };
 }
+
+/** Rename a model. Everything references it by id, so the new name shows everywhere at once. */
+export async function renameModel(actor: CurrentUser, modelId: string, rawName: string): Promise<Result<{ name: string }>> {
+  if (actor.role !== "DIRECTOR") return fail("Only the Director can rename models.");
+  const name = rawName.trim().replace(/\s+/g, " ");
+  if (name.length < 1 || name.length > 40) return fail("Model name must be 1–40 characters.");
+
+  try {
+    await db.$transaction(async (tx) => {
+      const model = await tx.model.findUnique({ where: { id: modelId }, select: { name: true } });
+      if (!model) throw new NotFound();
+      if (model.name === name) return;
+      const clash = await tx.model.findFirst({ where: { name: { equals: name, mode: "insensitive" }, id: { not: modelId } } });
+      if (clash) throw new NameTaken();
+      await tx.model.update({ where: { id: modelId }, data: { name } });
+      await audit(tx, { actorId: actor.id, action: "model.rename", target: modelId, meta: { before: model.name, after: name } });
+    });
+    return { ok: true, data: { name } };
+  } catch (e) {
+    if (e instanceof NotFound) return fail("Model not found.");
+    if (e instanceof NameTaken || isUniqueViolation(e)) return fail(`A model called "${name}" already exists.`);
+    throw e;
+  }
+}
+
+class NotFound extends Error {}
