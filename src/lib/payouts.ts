@@ -5,6 +5,7 @@ import { db } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { fail, type Result } from "@/lib/action-result";
 import type { CurrentUser } from "@/lib/auth/session";
+import { settleBoards } from "@/lib/leaderboard";
 import { getSetting } from "@/lib/settings";
 import { normalizeTxHash, normalizeWallet } from "@/lib/wallet";
 import { weekBounds } from "@/lib/weeks";
@@ -35,8 +36,11 @@ export type LockSummary = { weekId: string; payouts: number; totalCents: number;
 /**
  * Locks a finished week and generates its payouts, in one transaction.
  * Payouts come from the week's QUALIFIED convos and their snapshotted rates; wallets are snapshotted now.
+ * Leaderboard winners get their prize added as bonusCents (included in amountCents), exactly once.
  */
 export async function lockWeek(actorId: string | null, weekId: string, now = new Date()): Promise<Result<LockSummary>> {
+  // Read before the transaction: production has a single pooled connection, which the transaction holds.
+  const prizes = await getSetting("leaderboardPrizes");
   try {
     const summary = await db.$transaction(async (tx) => {
       // FOR UPDATE: waits for any ingest holding FOR SHARE on this week, and blocks new ones until we commit.
@@ -50,18 +54,30 @@ export async function lockWeek(actorId: string | null, weekId: string, now = new
       if (week.endsAt > now) throw new PayoutError("This week hasn't finished yet.");
 
       const where: Prisma.ConvoWhereInput = { weekId, status: "QUALIFIED" };
-      const lines: { userId: string; role: Role; convos: number; amountCents: number }[] = [];
+      const lines: { userId: string; role: Role; convos: number; amountCents: number; bonusCents: number }[] = [];
       const collect = async (field: "vaId" | "leadVaId" | "leadManagerId", sum: "vaCents" | "leadVaCents" | "lmCents", role: Role) => {
         const groups = await tx.convo.groupBy({ by: [field], where, _count: true, _sum: { [sum]: true } });
         for (const g of groups) {
           const userId = g[field];
           const amountCents = (g._sum as Record<string, number | null>)[sum] ?? 0;
-          if (userId && amountCents > 0) lines.push({ userId, role, convos: g._count, amountCents });
+          if (userId && amountCents > 0) lines.push({ userId, role, convos: g._count, amountCents, bonusCents: 0 });
         }
       };
       await collect("vaId", "vaCents", "VA");
       await collect("leadVaId", "leadVaCents", "LEAD_VA");
       await collect("leadManagerId", "lmCents", "LEAD_MANAGER");
+
+      const wins = await settleBoards(tx, weekId, prizes);
+      for (const w of wins.filter((w) => w.prizeCents > 0)) {
+        const line = lines.find((l) => l.userId === w.userId && l.role === w.board);
+        if (line) {
+          line.bonusCents += w.prizeCents;
+          line.amountCents += w.prizeCents;
+        } else {
+          // e.g. a zero commission rate: the prize alone still gets paid.
+          lines.push({ userId: w.userId, role: w.board, convos: w.convos, amountCents: w.prizeCents, bonusCents: w.prizeCents });
+        }
+      }
 
       const wallets = new Map(
         (await tx.user.findMany({ where: { id: { in: lines.map((l) => l.userId) } }, select: { id: true, walletAddress: true } })).map(
@@ -76,7 +92,13 @@ export async function lockWeek(actorId: string | null, weekId: string, now = new
         actorId,
         action: "week.lock",
         target: weekId,
-        meta: { payouts: lines.length, totalCents, missingWallets: lines.filter((l) => !wallets.get(l.userId)).length },
+        meta: {
+          payouts: lines.length,
+          totalCents,
+          bonusCents: lines.reduce((s, l) => s + l.bonusCents, 0),
+          winners: wins.map((w) => ({ board: w.board, rank: w.rank, userId: w.userId, prizeCents: w.prizeCents })),
+          missingWallets: lines.filter((l) => !wallets.get(l.userId)).length,
+        },
       });
       return { weekId, payouts: lines.length, totalCents, alreadyLocked: false };
     });

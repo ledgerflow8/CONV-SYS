@@ -354,6 +354,12 @@ Lead VA fires a VA → user `FIRED`, login blocked, tracking link deactivated, a
 
 ---
 
+### Weekly leaderboards (client feedback 2026-10-23, `src/lib/leaderboard*.ts`)
+
+- **Boards:** VAs ranked agency-wide by their qualified convos in the open week; Lead VAs by their team's qualified convos. Same counts and snapshotted cents as payouts (`vaId` / `leadVaId`). Ties: whoever reached the count first (latest `qualifiedAt`) ranks higher. Only ACTIVE users are listed. Deliberately agency-wide (not `scopeFor`): only username, convo count and earnings are exposed.
+- **Where:** VA board on VA + Director dashboards; Lead VA board on Lead VA, Lead Manager + Director dashboards. Top 10 plus the viewer's own row and their gap to the place above; a Lead Manager's own Lead VAs are highlighted; the Director sees full boards and past winners. Refreshes with the dashboard's live polling.
+- **Prizes:** Settings `leaderboardPrizes` (cents; defaults VA $10/$8/$5, Lead VA $30/$10/$5). At week lock, each board's top 3 (with ≥ 1 convo, still ACTIVE) are frozen as `LeaderboardWin` rows and the prize is added to their payout as `Payout.bonusCents` (included in `amountCents`, shown as a separate line in payout history and the CSV). Once per week: the lock is idempotent and `(weekId, board, rank)` is unique.
+
 ## 6. Tracking links
 
 `GET /v/[slug]`:

@@ -87,6 +87,7 @@ model User {
   convosAsLeadVa Convo[]        @relation("convoLeadVa")
   convosAsLm     Convo[]        @relation("convoLm")
   payouts        Payout[]
+  leaderboardWins LeaderboardWin[]
   inviteTokens   InviteToken[]
   auditLogs      AuditLog[]
 
@@ -227,8 +228,9 @@ model Week {
   endsAt   DateTime
   status   WeekStatus @default(OPEN)
 
-  convos  Convo[]
-  payouts Payout[]
+  convos          Convo[]
+  payouts         Payout[]
+  leaderboardWins LeaderboardWin[]
 }
 
 model Payout {
@@ -239,13 +241,30 @@ model Payout {
   week          Week      @relation(fields: [weekId], references: [id])
   role          Role
   convos        Int
-  amountCents   Int
+  amountCents   Int // total to send: commission + bonusCents
+  bonusCents    Int       @default(0) // leaderboard prize included in amountCents (separate line in the UI/CSV)
   walletAddress String? // snapshot at lock time
   status        PayStatus @default(PENDING)
   txHash        String?
   paidAt        DateTime?
 
   @@unique([userId, weekId])
+}
+
+// Weekly leaderboard winners, frozen when the week locks (PLAN.md: leaderboards). board = VA | LEAD_VA.
+model LeaderboardWin {
+  id         String @id @default(cuid())
+  weekId     String
+  week       Week   @relation(fields: [weekId], references: [id])
+  board      Role
+  rank       Int // 1..3
+  userId     String
+  user       User   @relation(fields: [userId], references: [id])
+  convos     Int
+  prizeCents Int
+
+  @@unique([weekId, board, rank])
+  @@unique([weekId, board, userId])
 }
 
 model InviteToken {

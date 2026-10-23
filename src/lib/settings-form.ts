@@ -22,11 +22,23 @@ export type SettingsFormInput = {
   payoutCurrency: string;
   clickMatchWindowMin: string;
   supportTelegram: string;
+  prizeVa1: string;
+  prizeVa2: string;
+  prizeVa3: string;
+  prizeLeadVa1: string;
+  prizeLeadVa2: string;
+  prizeLeadVa3: string;
 };
+
+export const PRIZE_FIELDS = {
+  va: ["prizeVa1", "prizeVa2", "prizeVa3"],
+  leadVa: ["prizeLeadVa1", "prizeLeadVa2", "prizeLeadVa3"],
+} as const;
 
 export type SettingsFormErrors = Partial<Record<keyof SettingsFormInput, string>>;
 
 const MAX_RATE_CENTS = 10_000; // $100 per convo: guards against a typo like "25" meaning cents
+const MAX_PRIZE_CENTS = 100_000; // $1,000 per prize
 
 export function parseSettingsForm(
   input: SettingsFormInput,
@@ -71,6 +83,14 @@ export function parseSettingsForm(
   const support = supportRaw ? normalizeHandle(supportRaw) : "";
   if (support === null) errors.supportTelegram = "Not a valid Telegram username.";
 
+  const prize = (field: (typeof PRIZE_FIELDS)[keyof typeof PRIZE_FIELDS][number]) => {
+    const cents = parseDollarsToCents(input[field]);
+    if (cents === null) errors[field] = "Enter an amount like 10 (0 = no prize)";
+    else if (cents > MAX_PRIZE_CENTS) errors[field] = "That's over $1,000. Check the amount.";
+    return cents ?? 0;
+  };
+  const leaderboardPrizes = { va: PRIZE_FIELDS.va.map(prize), leadVa: PRIZE_FIELDS.leadVa.map(prize) };
+
   if (Object.keys(errors).length) return { ok: false, errors };
   return {
     ok: true,
@@ -82,6 +102,7 @@ export function parseSettingsForm(
       payoutCurrency: currency,
       clickMatchWindowMin: windowMin,
       supportTelegram: support ?? "",
+      leaderboardPrizes,
     },
   };
 }

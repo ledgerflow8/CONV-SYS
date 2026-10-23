@@ -110,7 +110,7 @@ export type CommissionSummary = {
   totalConvos: number; // all-time qualified convos they earned on
   weeklyAverageCents: number; // over completed weeks with earnings
   bestWeek: { startsAt: Date; endsAt: Date; cents: number } | null;
-  history: { id: string; startsAt: Date; endsAt: Date; convos: number; amountCents: number; status: string; paidAt: Date | null }[];
+  history: { id: string; startsAt: Date; endsAt: Date; convos: number; amountCents: number; bonusCents: number; status: string; paidAt: Date | null }[];
 };
 
 /** The user's own commission. Only their own payouts and their own commission column count. */
@@ -124,7 +124,7 @@ export async function commissionSummary(user: ScopeUser & { role: "VA" | "LEAD_V
       where: { AND: [scopeFor(user).payout, { userId: user.id }] },
       orderBy: { week: { startsAt: "desc" } },
       take: 26,
-      select: { id: true, convos: true, amountCents: true, status: true, paidAt: true, week: { select: { startsAt: true, endsAt: true } } },
+      select: { id: true, convos: true, amountCents: true, bonusCents: true, status: true, paidAt: true, week: { select: { startsAt: true, endsAt: true } } },
     }),
   ]);
   // Average and best week are over completed weeks only; the current week is still filling up.
@@ -143,6 +143,6 @@ export async function commissionSummary(user: ScopeUser & { role: "VA" | "LEAD_V
     totalConvos: all.convos,
     weeklyAverageCents: earned.length ? Math.round(earned.reduce((s, w) => s + w.cents, 0) / earned.length) : 0,
     bestWeek: best ? { startsAt: best.startsAt, endsAt: best.endsAt, cents: best.cents } : null,
-    history: payouts.map((p) => ({ id: p.id, ...p.week, convos: p.convos, amountCents: p.amountCents, status: p.status, paidAt: p.paidAt })),
+    history: payouts.map((p) => ({ id: p.id, ...p.week, convos: p.convos, amountCents: p.amountCents, bonusCents: p.bonusCents, status: p.status, paidAt: p.paidAt })),
   };
 }

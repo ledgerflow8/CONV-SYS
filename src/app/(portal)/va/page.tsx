@@ -1,11 +1,13 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { CopyButton } from "@/components/copy-button";
+import { BonusNote, LeaderboardCard, PrizesCard } from "@/components/leaderboard";
 import { LiveRefresh } from "@/components/live-refresh";
 import { StatCard, WalletBanner } from "@/components/stat-card";
 import { TopBar } from "@/components/shell/top-bar";
 import { WalletDialog } from "@/components/wallet-dialog";
 import { requireRole } from "@/lib/auth/session";
 import { db } from "@/lib/db";
+import { liveBoard, prizesFor } from "@/lib/leaderboard";
 import { trackingUrl } from "@/lib/links";
 import { formatCents } from "@/lib/money";
 import { scopeFor } from "@/lib/scope";
@@ -18,7 +20,7 @@ export default async function VaDashboard() {
   const scope = scopeFor(user);
   const { week, timeZone } = await currentPeriods();
 
-  const [thisWeek, byAccount, accounts, me, rates, payouts, currency] = await Promise.all([
+  const [thisWeek, byAccount, accounts, me, rates, payouts, currency, board, prizes] = await Promise.all([
     qualifiedTotals(user, inWeek(week)),
     qualifiedTotalsBy(user, "tgAccountId", inWeek(week)),
     db.tgAccount.findMany({
@@ -34,9 +36,11 @@ export default async function VaDashboard() {
       where: scope.payout,
       orderBy: { week: { startsAt: "desc" } },
       take: 12,
-      select: { id: true, convos: true, amountCents: true, status: true, week: { select: { startsAt: true, endsAt: true } } },
+      select: { id: true, convos: true, amountCents: true, bonusCents: true, status: true, week: { select: { startsAt: true, endsAt: true } } },
     }),
     getSetting("payoutCurrency"),
+    liveBoard("VA", week),
+    getSetting("leaderboardPrizes"),
   ]);
 
   return (
@@ -51,6 +55,9 @@ export default async function VaDashboard() {
         <StatCard label="Active Telegrams" value={accounts.length} />
         <StatCard label="Pays out" value={formatDay(week.endsAt, timeZone)} hint="Monday after the week closes" />
       </div>
+
+      <LeaderboardCard title="VAs this week" ranked={board} highlight={[user.id]} viewerId={user.id} emptyText="No VAs on the board yet." />
+      <PrizesCard boards={[{ label: "VAs", prizes: prizesFor(prizes, "VA") }]} />
 
       <Card className="mb-4">
         <CardHeader>
@@ -117,11 +124,14 @@ export default async function VaDashboard() {
           <ul className="divide-y">
             {payouts.length === 0 && <li className="px-6 py-2 text-sm text-muted-foreground">No payouts yet.</li>}
             {payouts.map((p) => (
-              <li key={p.id} className="flex items-center justify-between px-6 py-2 text-sm">
+              <li key={p.id} className="flex items-center justify-between gap-2 px-6 py-2 text-sm">
                 <span>{formatPeriod(p.week, timeZone)}</span>
                 <span className="text-muted-foreground">{p.convos} convos</span>
-                <span className="font-medium">
-                  {formatCents(p.amountCents)} <span className="text-xs font-normal text-muted-foreground">{p.status === "SENT" ? "paid" : p.status.toLowerCase()}</span>
+                <span className="flex flex-col items-end font-medium">
+                  <span>
+                    {formatCents(p.amountCents)} <span className="text-xs font-normal text-muted-foreground">{p.status === "SENT" ? "paid" : p.status.toLowerCase()}</span>
+                  </span>
+                  <BonusNote cents={p.bonusCents} />
                 </span>
               </li>
             ))}

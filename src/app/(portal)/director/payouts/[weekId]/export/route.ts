@@ -27,9 +27,24 @@ export async function GET(_req: Request, { params }: { params: Promise<{ weekId:
     }),
   ]);
 
-  const header = ["username", "role", "convos", `amount_${currency.split(" ")[0].toLowerCase()}`, "amount_cents", "wallet", "status", "tx_hash"];
+  const cur = currency.split(" ")[0].toLowerCase();
+  // amount = commission + leaderboard bonus: the figure to send.
+  const header = ["username", "role", "convos", `commission_${cur}`, `leaderboard_bonus_${cur}`, `amount_${cur}`, "amount_cents", "wallet", "status", "tx_hash"];
   const rows = payouts.map((p) =>
-    [p.user.username, ROLE_LABEL[p.role], p.convos, centsToDollars(p.amountCents), p.amountCents, p.walletAddress ?? "", p.status, p.txHash ?? ""].map(csvCell).join(","),
+    [
+      p.user.username,
+      ROLE_LABEL[p.role],
+      p.convos,
+      centsToDollars(p.amountCents - p.bonusCents),
+      centsToDollars(p.bonusCents),
+      centsToDollars(p.amountCents),
+      p.amountCents,
+      p.walletAddress ?? "",
+      p.status,
+      p.txHash ?? "",
+    ]
+      .map(csvCell)
+      .join(","),
   );
   const body = [header.map(csvCell).join(","), ...rows].join("\r\n") + "\r\n";
 

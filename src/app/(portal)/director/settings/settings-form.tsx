@@ -114,6 +114,27 @@ export function SettingsForm({
         </CardContent>
       </Card>
 
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Leaderboard prizes</CardTitle>
+          <CardDescription>
+            In dollars, for 1st, 2nd and 3rd each week. Added to the winners&apos; payout when the week locks. 0 = no prize.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-3 gap-3">
+            {field("prizeVa1", "VA 🥇", { inputMode: "decimal" })}
+            {field("prizeVa2", "VA 🥈", { inputMode: "decimal" })}
+            {field("prizeVa3", "VA 🥉", { inputMode: "decimal" })}
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            {field("prizeLeadVa1", "Lead VA 🥇", { inputMode: "decimal" })}
+            {field("prizeLeadVa2", "Lead VA 🥈", { inputMode: "decimal" })}
+            {field("prizeLeadVa3", "Lead VA 🥉", { inputMode: "decimal" })}
+          </div>
+        </CardContent>
+      </Card>
+
       <div className="sticky bottom-24 flex items-center gap-3 rounded-xl border bg-background/95 p-3 shadow-sm backdrop-blur">
         <Button type="submit" disabled={pending || !dirty}>
           {pending ? "Saving…" : "Save settings"}

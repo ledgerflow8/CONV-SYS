@@ -7,6 +7,7 @@ export type Settings = {
   payoutCurrency: string;
   clickMatchWindowMin: number;
   supportTelegram: string; // handle for "Report a Problem"; empty = not set up yet
+  leaderboardPrizes: { va: number[]; leadVa: number[] }; // cents for 1st, 2nd, 3rd; paid at week lock
 };
 
 export const SETTING_DEFAULTS: Settings = {
@@ -17,6 +18,7 @@ export const SETTING_DEFAULTS: Settings = {
   payoutCurrency: "USDT",
   clickMatchWindowMin: 30,
   supportTelegram: "",
+  leaderboardPrizes: { va: [1000, 800, 500], leadVa: [3000, 1000, 500] },
 };
 
 export type SettingKey = keyof Settings;

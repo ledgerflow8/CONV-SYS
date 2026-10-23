@@ -31,6 +31,8 @@ async function lastWeekRow() {
 beforeEach(async () => {
   await resetDb();
   await setSetting("rates", { va: 25, leadVa: 10, lm: 5 });
+  // Commission only here; leaderboard prizes are covered in leaderboard.db.test.ts.
+  await setSetting("leaderboardPrizes", { va: [0, 0, 0], leadVa: [0, 0, 0] });
 });
 
 describe("lockWeek", () => {

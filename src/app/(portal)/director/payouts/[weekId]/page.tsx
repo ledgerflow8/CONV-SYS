@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft, Download, TriangleAlert } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
+import { BonusNote } from "@/components/leaderboard";
 import { StatCard } from "@/components/stat-card";
 import { StatusBadge } from "@/components/status-badge";
 import { TopBar } from "@/components/shell/top-bar";
@@ -109,6 +110,7 @@ export default async function WeekPayoutsPage({ params }: { params: Promise<{ we
                     </div>
                     <div className="flex shrink-0 flex-col items-end gap-1">
                       <span className="font-semibold tabular-nums">{formatCents(p.amountCents)}</span>
+                      <BonusNote cents={p.bonusCents} />
                       <StatusBadge status={p.status} />
                     </div>
                   </div>

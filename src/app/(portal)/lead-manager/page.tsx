@@ -1,11 +1,14 @@
 import { ChevronDown } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { LeaderboardCard, PrizesCard } from "@/components/leaderboard";
 import { LiveRefresh } from "@/components/live-refresh";
 import { StatCard } from "@/components/stat-card";
 import { TopBar } from "@/components/shell/top-bar";
 import { requireRole } from "@/lib/auth/session";
 import { db } from "@/lib/db";
+import { liveBoard, prizesFor } from "@/lib/leaderboard";
+import { getSetting } from "@/lib/settings";
 import { formatCents } from "@/lib/money";
 import { scopeFor } from "@/lib/scope";
 import { currentPeriods, inWeek, qualifiedTotals, qualifiedTotalsBy, ZERO } from "@/lib/stats";
@@ -17,7 +20,7 @@ export default async function LeadManagerDashboard() {
   const scope = scopeFor(user);
   const { week } = await currentPeriods();
 
-  const [models, leadVas, all, byTeam, byVa] = await Promise.all([
+  const [models, leadVas, all, byTeam, byVa, board, prizes] = await Promise.all([
     db.model.findMany({ where: { active: true }, orderBy: { name: "asc" }, select: { id: true, name: true } }),
     db.user.findMany({
       where: { AND: [scope.user, { role: "LEAD_VA", parentId: user.id, status: "ACTIVE" }] },
@@ -37,6 +40,8 @@ export default async function LeadManagerDashboard() {
     qualifiedTotals(user, inWeek(week)),
     qualifiedTotalsBy(user, "leadVaId", inWeek(week)),
     qualifiedTotalsBy(user, "vaId", inWeek(week)),
+    liveBoard("LEAD_VA", week),
+    getSetting("leaderboardPrizes"),
   ]);
   const vaCount = leadVas.reduce((n, l) => n + l.children.length, 0);
 
@@ -59,6 +64,14 @@ export default async function LeadManagerDashboard() {
           hint={`VAs ${formatCents(all.vaCents)} + Lead VAs ${formatCents(all.leadVaCents)}`}
         />
       </div>
+
+      <LeaderboardCard
+        title="Lead VAs this week"
+        ranked={board}
+        highlight={leadVas.map((l) => l.id)}
+        emptyText="No Lead VAs on the board yet."
+      />
+      <PrizesCard boards={[{ label: "Lead VAs", prizes: prizesFor(prizes, "LEAD_VA") }]} />
 
       <Card>
         <CardHeader>

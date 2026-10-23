@@ -136,6 +136,12 @@ const settingsInput = z.object({
   payoutCurrency: z.string().max(60),
   clickMatchWindowMin: z.string().max(10),
   supportTelegram: z.string().max(64),
+  prizeVa1: z.string().max(20),
+  prizeVa2: z.string().max(20),
+  prizeVa3: z.string().max(20),
+  prizeLeadVa1: z.string().max(20),
+  prizeLeadVa2: z.string().max(20),
+  prizeLeadVa3: z.string().max(20),
 });
 
 export async function saveSettingsAction(

@@ -11,6 +11,12 @@ const valid: SettingsFormInput = {
   payoutCurrency: " USDT (TRC-20) ",
   clickMatchWindowMin: "30",
   supportTelegram: "@helpdesk_team",
+  prizeVa1: "10",
+  prizeVa2: "$8.00",
+  prizeVa3: "5",
+  prizeLeadVa1: "30",
+  prizeLeadVa2: "10",
+  prizeLeadVa3: "0",
 };
 
 describe("parseSettingsForm", () => {
@@ -25,6 +31,7 @@ describe("parseSettingsForm", () => {
         payoutCurrency: "USDT (TRC-20)",
         clickMatchWindowMin: 30,
         supportTelegram: "helpdesk_team",
+        leaderboardPrizes: { va: [1000, 800, 500], leadVa: [3000, 1000, 0] },
       },
     });
   });
@@ -46,11 +53,13 @@ describe("parseSettingsForm", () => {
       payoutCurrency: "",
       clickMatchWindowMin: "0",
       supportTelegram: "ab",
+      prizeVa2: "-5",
+      prizeLeadVa1: "5000",
     });
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(Object.keys(r.errors).sort()).toEqual(
-        ["blockedDomains", "clickMatchWindowMin", "payoutCurrency", "rateLm", "rateVa", "supportTelegram", "tier1Countries", "timezone"].sort(),
+        ["blockedDomains", "clickMatchWindowMin", "payoutCurrency", "prizeLeadVa1", "prizeVa2", "rateLm", "rateVa", "supportTelegram", "tier1Countries", "timezone"].sort(),
       );
     }
   });

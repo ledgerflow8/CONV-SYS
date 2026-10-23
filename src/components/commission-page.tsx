@@ -1,4 +1,5 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { BonusNote } from "@/components/leaderboard";
 import { LiveRefresh } from "@/components/live-refresh";
 import { StatCard } from "@/components/stat-card";
 import { StatusBadge } from "@/components/status-badge";
@@ -62,8 +63,11 @@ export async function CommissionPage({ user }: { user: CurrentUser & { role: "LE
               <li key={h.id} className="flex items-center justify-between gap-2 px-6 py-2 text-sm">
                 <span>{formatPeriod(h, timeZone)}</span>
                 <span className="text-muted-foreground">{h.convos} convos</span>
-                <span className="flex items-center gap-2 font-medium">
-                  {formatCents(h.amountCents)} <StatusBadge status={h.status} />
+                <span className="flex flex-col items-end gap-0.5 font-medium">
+                  <span className="flex items-center gap-2">
+                    {formatCents(h.amountCents)} <StatusBadge status={h.status} />
+                  </span>
+                  <BonusNote cents={h.bonusCents} />
                 </span>
               </li>
             ))}

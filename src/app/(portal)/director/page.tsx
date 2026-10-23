@@ -1,13 +1,16 @@
 import Link from "next/link";
 import { ChevronDown } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { LeaderboardCard, PastWinnersCard, PrizesCard } from "@/components/leaderboard";
 import { LiveRefresh } from "@/components/live-refresh";
 import { StatCard } from "@/components/stat-card";
 import { TopBar } from "@/components/shell/top-bar";
 import { requireRole } from "@/lib/auth/session";
 import { db } from "@/lib/db";
+import { liveBoard, pastWinners, prizesFor } from "@/lib/leaderboard";
 import { formatCents } from "@/lib/money";
 import { scopeFor } from "@/lib/scope";
+import { getSetting } from "@/lib/settings";
 import {
   activeVaCount,
   currentPeriods,
@@ -47,6 +50,12 @@ export default async function DirectorOverview() {
       },
     }),
   ]);
+  const [vaBoard, lvaBoard, prizes, past] = await Promise.all([
+    liveBoard("VA", week),
+    liveBoard("LEAD_VA", week),
+    getSetting("leaderboardPrizes"),
+    pastWinners(),
+  ]);
   const activeModels = await db.model.findMany({ where: { active: true }, orderBy: { name: "asc" }, select: { id: true, name: true } });
   const owedTotal = weekTotals.vaCents + weekTotals.leadVaCents + weekTotals.lmCents;
 
@@ -83,6 +92,16 @@ export default async function DirectorOverview() {
           ))}
         </CardContent>
       </Card>
+
+      <LeaderboardCard title="VAs this week" ranked={vaBoard} full emptyText="No active VAs yet." />
+      <LeaderboardCard title="Lead VAs this week" ranked={lvaBoard} full emptyText="No active Lead VAs yet." />
+      <PrizesCard
+        boards={[
+          { label: "VAs", prizes: prizesFor(prizes, "VA") },
+          { label: "Lead VAs", prizes: prizesFor(prizes, "LEAD_VA") },
+        ]}
+      />
+      <PastWinnersCard weeks={past} timeZone={timeZone} />
 
       <Card className="mb-4">
         <CardHeader>
