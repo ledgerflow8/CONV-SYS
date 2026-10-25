@@ -7,7 +7,7 @@ import { StatCard, WalletBanner } from "@/components/stat-card";
 import { TopBar } from "@/components/shell/top-bar";
 import { requireRole } from "@/lib/auth/session";
 import { db } from "@/lib/db";
-import { liveBoard, prizesFor } from "@/lib/leaderboard";
+import { liveBoard, prizeRules } from "@/lib/leaderboard";
 import { formatCents } from "@/lib/money";
 import { scopeFor } from "@/lib/scope";
 import { getSetting } from "@/lib/settings";
@@ -21,7 +21,8 @@ export default async function LeadVaDashboard() {
   const scope = scopeFor(user);
   const { week } = await currentPeriods();
 
-  const [model, team, teamWeek, byVa, pool, currency, board, prizes] = await Promise.all([
+  const rules = await prizeRules();
+  const [model, team, teamWeek, byVa, pool, currency, board] = await Promise.all([
     user.modelId ? db.model.findUnique({ where: { id: user.modelId }, select: { name: true, active: true } }) : null,
     db.user.findMany({
       where: { AND: [scope.user, { role: "VA", parentId: user.id, status: "ACTIVE" }] },
@@ -32,8 +33,7 @@ export default async function LeadVaDashboard() {
     qualifiedTotalsBy(user, "vaId", inWeek(week)),
     poolHealth(user),
     getSetting("payoutCurrency"),
-    liveBoard("LEAD_VA", week),
-    getSetting("leaderboardPrizes"),
+    liveBoard("LEAD_VA", week, rules),
   ]);
   const teamPool = pool.find((p) => p.modelId === user.modelId);
   const available = teamPool?.counts.AVAILABLE ?? 0;
@@ -58,8 +58,8 @@ export default async function LeadVaDashboard() {
         <StatCard label={`${model?.name ?? "Model"} Telegrams available`} value={available} tone={poolEmpty ? "danger" : undefined} />
       </div>
 
-      <LeaderboardCard title="Lead VAs this week" ranked={board} highlight={[user.id]} viewerId={user.id} emptyText="No Lead VAs on the board yet." />
-      <PrizesCard boards={[{ label: "Lead VAs", prizes: prizesFor(prizes, "LEAD_VA") }]} />
+      <LeaderboardCard title="Lead VAs this week" ranked={board} highlight={[user.id]} viewerId={user.id} rules={rules.LEAD_VA} emptyText="No Lead VAs on the board yet." />
+      <PrizesCard boards={[{ label: "Lead VAs", rules: rules.LEAD_VA }]} unit="team convos" />
 
       <div className="mb-4 space-y-2">
         <AddVaButton poolEmpty={poolEmpty || modelInactive} />

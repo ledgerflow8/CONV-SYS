@@ -6,7 +6,7 @@
 // snapshotted vaId / leadVaId and their snapshotted cents.
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
-import { rankBoard, PRIZE_PLACES, type Board, type Ranked } from "@/lib/leaderboard-rank";
+import { rankBoard, PRIZE_PLACES, type Board, type PrizeRules, type Ranked } from "@/lib/leaderboard-rank";
 import { getSetting } from "@/lib/settings";
 import type { Settings } from "@/lib/settings-defaults";
 import { inWeek, type Period } from "@/lib/stats";
@@ -14,10 +14,30 @@ import { inWeek, type Period } from "@/lib/stats";
 export const BOARDS: readonly Board[] = ["VA", "LEAD_VA"];
 const PRIZE_KEY = { VA: "va", LEAD_VA: "leadVa" } as const;
 
-export const prizesFor = (prizes: Settings["leaderboardPrizes"], board: Board) => prizes[PRIZE_KEY[board]].slice(0, PRIZE_PLACES);
+type RuleSettings = Pick<Settings, "leaderboardPrizes" | "leaderboardMinConvos" | "leaderboardPassDown">;
+export type BoardRules = Record<Board, PrizeRules>;
+
+export function rulesFrom(s: RuleSettings): BoardRules {
+  const one = (board: Board): PrizeRules => ({
+    prizes: s.leaderboardPrizes[PRIZE_KEY[board]].slice(0, PRIZE_PLACES),
+    minConvos: s.leaderboardMinConvos[PRIZE_KEY[board]].slice(0, PRIZE_PLACES),
+    passDown: s.leaderboardPassDown,
+  });
+  return { VA: one("VA"), LEAD_VA: one("LEAD_VA") };
+}
+
+/** Prize amounts, minimums and the pass-down switch from Settings. */
+export async function prizeRules(): Promise<BoardRules> {
+  const [leaderboardPrizes, leaderboardMinConvos, leaderboardPassDown] = await Promise.all([
+    getSetting("leaderboardPrizes"),
+    getSetting("leaderboardMinConvos"),
+    getSetting("leaderboardPassDown"),
+  ]);
+  return rulesFrom({ leaderboardPrizes, leaderboardMinConvos, leaderboardPassDown });
+}
 
 /** Every ACTIVE user of the board's role, ranked on the convos matching `convoWhere` (a week). */
-export async function loadBoard(client: Prisma.TransactionClient, board: Board, convoWhere: Prisma.ConvoWhereInput, prizes: readonly number[]): Promise<Ranked[]> {
+export async function loadBoard(client: Prisma.TransactionClient, board: Board, convoWhere: Prisma.ConvoWhereInput, rules: PrizeRules): Promise<Ranked[]> {
   const where: Prisma.ConvoWhereInput = { AND: [{ status: "QUALIFIED" }, convoWhere] };
   const users = await client.user.findMany({ where: { role: board, status: "ACTIVE" }, select: { id: true, username: true } });
   const groups =
@@ -40,28 +60,27 @@ export async function loadBoard(client: Prisma.TransactionClient, board: Board, 
       const g = by.get(u.id);
       return { userId: u.id, username: u.username, convos: g?.convos ?? 0, cents: g?.cents ?? 0, reachedAt: g?.reachedAt ?? null };
     }),
-    prizes,
+    rules,
   );
 }
 
 /** Live board for the current (open) week. */
-export async function liveBoard(board: Board, week: Period): Promise<Ranked[]> {
-  const prizes = await getSetting("leaderboardPrizes");
-  return loadBoard(db, board, inWeek(week), prizesFor(prizes, board));
+export async function liveBoard(board: Board, week: Period, rules?: BoardRules): Promise<Ranked[]> {
+  return loadBoard(db, board, inWeek(week), (rules ?? (await prizeRules()))[board]);
 }
 
 export type Win = { board: Board; rank: number; userId: string; convos: number; prizeCents: number };
 
 /**
- * Week lock (inside its transaction): freezes each board's top 3 (with at least one convo) as
- * LeaderboardWin rows. The unique (weekId, board, rank) key means a week can only be settled once.
+ * Week lock (inside its transaction): freezes each board's prize winners (people who met their
+ * place's minimum) as LeaderboardWin rows; `rank` is the prize place. The unique
+ * (weekId, board, rank) key means a week can only be settled once.
  */
-export async function settleBoards(tx: Prisma.TransactionClient, weekId: string, prizes: Settings["leaderboardPrizes"]): Promise<Win[]> {
+export async function settleBoards(tx: Prisma.TransactionClient, weekId: string, rules: BoardRules): Promise<Win[]> {
   const wins: Win[] = [];
   for (const board of BOARDS) {
-    const ranked = await loadBoard(tx, board, { weekId }, prizesFor(prizes, board));
-    for (const r of ranked.slice(0, PRIZE_PLACES)) {
-      if (r.convos > 0) wins.push({ board, rank: r.rank, userId: r.userId, convos: r.convos, prizeCents: r.prizeCents });
+    for (const r of await loadBoard(tx, board, { weekId }, rules[board])) {
+      if (r.prizePlace) wins.push({ board, rank: r.prizePlace, userId: r.userId, convos: r.convos, prizeCents: r.prizeCents });
     }
   }
   if (wins.length) await tx.leaderboardWin.createMany({ data: wins.map((w) => ({ weekId, ...w })) });

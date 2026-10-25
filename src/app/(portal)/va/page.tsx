@@ -7,7 +7,7 @@ import { TopBar } from "@/components/shell/top-bar";
 import { WalletDialog } from "@/components/wallet-dialog";
 import { requireRole } from "@/lib/auth/session";
 import { db } from "@/lib/db";
-import { liveBoard, prizesFor } from "@/lib/leaderboard";
+import { liveBoard, prizeRules } from "@/lib/leaderboard";
 import { trackingUrl } from "@/lib/links";
 import { formatCents } from "@/lib/money";
 import { scopeFor } from "@/lib/scope";
@@ -20,7 +20,8 @@ export default async function VaDashboard() {
   const scope = scopeFor(user);
   const { week, timeZone } = await currentPeriods();
 
-  const [thisWeek, byAccount, accounts, me, rates, payouts, currency, board, prizes] = await Promise.all([
+  const rules = await prizeRules();
+  const [thisWeek, byAccount, accounts, me, rates, payouts, currency, board] = await Promise.all([
     qualifiedTotals(user, inWeek(week)),
     qualifiedTotalsBy(user, "tgAccountId", inWeek(week)),
     db.tgAccount.findMany({
@@ -39,8 +40,7 @@ export default async function VaDashboard() {
       select: { id: true, convos: true, amountCents: true, bonusCents: true, status: true, week: { select: { startsAt: true, endsAt: true } } },
     }),
     getSetting("payoutCurrency"),
-    liveBoard("VA", week),
-    getSetting("leaderboardPrizes"),
+    liveBoard("VA", week, rules),
   ]);
 
   return (
@@ -56,8 +56,8 @@ export default async function VaDashboard() {
         <StatCard label="Pays out" value={formatDay(week.endsAt, timeZone)} hint="Monday after the week closes" />
       </div>
 
-      <LeaderboardCard title="VAs this week" ranked={board} highlight={[user.id]} viewerId={user.id} emptyText="No VAs on the board yet." />
-      <PrizesCard boards={[{ label: "VAs", prizes: prizesFor(prizes, "VA") }]} />
+      <LeaderboardCard title="VAs this week" ranked={board} highlight={[user.id]} viewerId={user.id} rules={rules.VA} emptyText="No VAs on the board yet." />
+      <PrizesCard boards={[{ label: "VAs", rules: rules.VA }]} />
 
       <Card className="mb-4">
         <CardHeader>

@@ -118,19 +118,38 @@ export function SettingsForm({
         <CardHeader>
           <CardTitle className="text-base">Leaderboard prizes</CardTitle>
           <CardDescription>
-            In dollars, for 1st, 2nd and 3rd each week. Added to the winners&apos; payout when the week locks. 0 = no prize.
+            In dollars, for 1st, 2nd and 3rd each week, with the qualified convos needed to win each one. Added to the winners&apos;
+            payout when the week locks. 0 = no prize / no minimum.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid grid-cols-3 gap-3">
-            {field("prizeVa1", "VA 🥇", { inputMode: "decimal" })}
-            {field("prizeVa2", "VA 🥈", { inputMode: "decimal" })}
-            {field("prizeVa3", "VA 🥉", { inputMode: "decimal" })}
+            {field("prizeVa1", "VA 🥇 $", { inputMode: "decimal" })}
+            {field("prizeVa2", "VA 🥈 $", { inputMode: "decimal" })}
+            {field("prizeVa3", "VA 🥉 $", { inputMode: "decimal" })}
+            {field("minVa1", "Min. convos", { inputMode: "numeric" })}
+            {field("minVa2", "Min. convos", { inputMode: "numeric" })}
+            {field("minVa3", "Min. convos", { inputMode: "numeric" })}
           </div>
           <div className="grid grid-cols-3 gap-3">
-            {field("prizeLeadVa1", "Lead VA 🥇", { inputMode: "decimal" })}
-            {field("prizeLeadVa2", "Lead VA 🥈", { inputMode: "decimal" })}
-            {field("prizeLeadVa3", "Lead VA 🥉", { inputMode: "decimal" })}
+            {field("prizeLeadVa1", "Lead VA 🥇 $", { inputMode: "decimal" })}
+            {field("prizeLeadVa2", "Lead VA 🥈 $", { inputMode: "decimal" })}
+            {field("prizeLeadVa3", "Lead VA 🥉 $", { inputMode: "decimal" })}
+            {field("minLeadVa1", "Min. team convos", { inputMode: "numeric" })}
+            {field("minLeadVa2", "Min. team convos", { inputMode: "numeric" })}
+            {field("minLeadVa3", "Min. team convos", { inputMode: "numeric" })}
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="prizePassDown">If the person in a prize place is below its minimum</Label>
+            <select
+              id="prizePassDown"
+              value={form.prizePassDown}
+              onChange={set("prizePassDown")}
+              className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+            >
+              <option value="no">Don&apos;t pay that prize</option>
+              <option value="yes">Pass it down to the next person who meets the minimum</option>
+            </select>
           </div>
         </CardContent>
       </Card>

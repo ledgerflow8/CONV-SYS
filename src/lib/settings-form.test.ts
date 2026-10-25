@@ -17,6 +17,13 @@ const valid: SettingsFormInput = {
   prizeLeadVa1: "30",
   prizeLeadVa2: "10",
   prizeLeadVa3: "0",
+  minVa1: "200",
+  minVa2: "200",
+  minVa3: " 150 ",
+  minLeadVa1: "500",
+  minLeadVa2: "",
+  minLeadVa3: "0",
+  prizePassDown: "no",
 };
 
 describe("parseSettingsForm", () => {
@@ -32,6 +39,8 @@ describe("parseSettingsForm", () => {
         clickMatchWindowMin: 30,
         supportTelegram: "helpdesk_team",
         leaderboardPrizes: { va: [1000, 800, 500], leadVa: [3000, 1000, 0] },
+        leaderboardMinConvos: { va: [200, 200, 150], leadVa: [500, 0, 0] },
+        leaderboardPassDown: false,
       },
     });
   });
@@ -55,13 +64,20 @@ describe("parseSettingsForm", () => {
       supportTelegram: "ab",
       prizeVa2: "-5",
       prizeLeadVa1: "5000",
+      minVa1: "2.5",
+      minLeadVa2: "-1",
     });
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(Object.keys(r.errors).sort()).toEqual(
-        ["blockedDomains", "clickMatchWindowMin", "payoutCurrency", "prizeLeadVa1", "prizeVa2", "rateLm", "rateVa", "supportTelegram", "tier1Countries", "timezone"].sort(),
+        ["blockedDomains", "clickMatchWindowMin", "payoutCurrency", "minLeadVa2", "minVa1", "prizeLeadVa1", "prizeVa2", "rateLm", "rateVa", "supportTelegram", "tier1Countries", "timezone"].sort(),
       );
     }
+  });
+
+  it("pass-down switch", () => {
+    const r = parseSettingsForm({ ...valid, prizePassDown: "yes" });
+    expect(r.ok && r.settings.leaderboardPassDown).toBe(true);
   });
 
   it("offers only fixed-offset zones, including the default GMT+2", () => {

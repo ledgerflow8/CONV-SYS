@@ -8,6 +8,8 @@ export type Settings = {
   clickMatchWindowMin: number;
   supportTelegram: string; // handle for "Report a Problem"; empty = not set up yet
   leaderboardPrizes: { va: number[]; leadVa: number[] }; // cents for 1st, 2nd, 3rd; paid at week lock
+  leaderboardMinConvos: { va: number[]; leadVa: number[] }; // qualified convos needed for 1st, 2nd, 3rd
+  leaderboardPassDown: boolean; // unmet minimum: false = prize not paid; true = next qualifying person gets it
 };
 
 export const SETTING_DEFAULTS: Settings = {
@@ -19,6 +21,8 @@ export const SETTING_DEFAULTS: Settings = {
   clickMatchWindowMin: 30,
   supportTelegram: "",
   leaderboardPrizes: { va: [1000, 800, 500], leadVa: [3000, 1000, 500] },
+  leaderboardMinConvos: { va: [200, 200, 200], leadVa: [500, 0, 0] },
+  leaderboardPassDown: false,
 };
 
 export type SettingKey = keyof Settings;

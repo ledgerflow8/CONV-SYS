@@ -7,8 +7,7 @@ import { StatCard } from "@/components/stat-card";
 import { TopBar } from "@/components/shell/top-bar";
 import { requireRole } from "@/lib/auth/session";
 import { db } from "@/lib/db";
-import { liveBoard, prizesFor } from "@/lib/leaderboard";
-import { getSetting } from "@/lib/settings";
+import { liveBoard, prizeRules } from "@/lib/leaderboard";
 import { formatCents } from "@/lib/money";
 import { scopeFor } from "@/lib/scope";
 import { currentPeriods, inWeek, qualifiedTotals, qualifiedTotalsBy, ZERO } from "@/lib/stats";
@@ -20,7 +19,8 @@ export default async function LeadManagerDashboard() {
   const scope = scopeFor(user);
   const { week } = await currentPeriods();
 
-  const [models, leadVas, all, byTeam, byVa, board, prizes] = await Promise.all([
+  const rules = await prizeRules();
+  const [models, leadVas, all, byTeam, byVa, board] = await Promise.all([
     db.model.findMany({ where: { active: true }, orderBy: { name: "asc" }, select: { id: true, name: true } }),
     db.user.findMany({
       where: { AND: [scope.user, { role: "LEAD_VA", parentId: user.id, status: "ACTIVE" }] },
@@ -40,8 +40,7 @@ export default async function LeadManagerDashboard() {
     qualifiedTotals(user, inWeek(week)),
     qualifiedTotalsBy(user, "leadVaId", inWeek(week)),
     qualifiedTotalsBy(user, "vaId", inWeek(week)),
-    liveBoard("LEAD_VA", week),
-    getSetting("leaderboardPrizes"),
+    liveBoard("LEAD_VA", week, rules),
   ]);
   const vaCount = leadVas.reduce((n, l) => n + l.children.length, 0);
 
@@ -71,7 +70,7 @@ export default async function LeadManagerDashboard() {
         highlight={leadVas.map((l) => l.id)}
         emptyText="No Lead VAs on the board yet."
       />
-      <PrizesCard boards={[{ label: "Lead VAs", prizes: prizesFor(prizes, "LEAD_VA") }]} />
+      <PrizesCard boards={[{ label: "Lead VAs", rules: rules.LEAD_VA }]} unit="team convos" />
 
       <Card>
         <CardHeader>

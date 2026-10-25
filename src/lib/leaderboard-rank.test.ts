@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { boardRows, ordinal, rankBoard, standingLine, type BoardEntry } from "./leaderboard-rank";
+import { boardRows, ordinal, progressLine, rankBoard, standingLine, type BoardEntry, type PrizeRules } from "./leaderboard-rank";
 
 const at = (min: number) => new Date(Date.UTC(2026, 9, 19, 10, min));
 const e = (username: string, convos: number, reachedMin: number | null = null): BoardEntry => ({
@@ -9,7 +9,8 @@ const e = (username: string, convos: number, reachedMin: number | null = null): 
   cents: convos * 25,
   reachedAt: reachedMin === null ? null : at(reachedMin),
 });
-const PRIZES = [1000, 800, 500];
+// No minimums: these tests are about ordering. Minimums have their own block below.
+const PRIZES: PrizeRules = { prizes: [1000, 800, 500], minConvos: [0, 0, 0], passDown: false };
 
 describe("rankBoard", () => {
   it("ranks by convos, highest first, with distinct ranks", () => {
@@ -40,7 +41,7 @@ describe("rankBoard", () => {
   });
 
   it("a $0 prize setting means no prize for that place", () => {
-    expect(rankBoard([e("a", 3, 1), e("b", 2, 1), e("c", 1, 1)], [3000, 1000, 0]).map((x) => x.prizeCents)).toEqual([3000, 1000, 0]);
+    expect(rankBoard([e("a", 3, 1), e("b", 2, 1), e("c", 1, 1)], { ...PRIZES, prizes: [3000, 1000, 0] }).map((x) => x.prizeCents)).toEqual([3000, 1000, 0]);
   });
 });
 
@@ -82,5 +83,62 @@ describe("viewer row", () => {
     expect([1, 2, 3, 4, 11, 12, 13, 21, 22, 101, 111].map(ordinal)).toEqual([
       "1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "22nd", "101st", "111th",
     ]);
+  });
+});
+
+describe("prize minimums", () => {
+  const VA: PrizeRules = { prizes: [1000, 800, 500], minConvos: [200, 200, 200], passDown: false };
+  const LVA: PrizeRules = { prizes: [3000, 1000, 500], minConvos: [500, 0, 0], passDown: false };
+  const won = (r: ReturnType<typeof rankBoard>) => r.map((x) => [x.username, x.prizePlace, x.prizeCents]);
+
+  it("below the minimum: no prize; at or above: prize", () => {
+    const r = rankBoard([e("a", 250, 1), e("b", 200, 2), e("c", 199, 3), e("d", 50, 4)], VA);
+    expect(won(r)).toEqual([
+      ["a", 1, 1000],
+      ["b", 2, 800], // exactly 200 qualifies
+      ["c", null, 0], // 199: 3rd place isn't paid, and nobody below gets it
+      ["d", null, 0],
+    ]);
+  });
+
+  it("Lead VAs: 1st needs 500 team convos; 2nd and 3rd have no minimum", () => {
+    expect(won(rankBoard([e("x", 499, 1), e("y", 30, 2), e("z", 1, 3)], LVA))).toEqual([
+      ["x", null, 0], // 1st not paid
+      ["y", 2, 1000],
+      ["z", 3, 500],
+    ]);
+    expect(won(rankBoard([e("x", 500, 1), e("y", 30, 2)], LVA)).slice(0, 1)).toEqual([["x", 1, 3000]]);
+  });
+
+  it("pass down: an unmet prize goes to the next person who meets it", () => {
+    const tiers: PrizeRules = { prizes: [1000, 800, 500], minConvos: [300, 100, 0], passDown: true };
+    expect(won(rankBoard([e("a", 250, 1), e("b", 120, 2), e("c", 40, 3), e("d", 10, 4)], tiers))).toEqual([
+      ["a", 2, 800], // below 300: 1st has no taker; a takes 2nd
+      ["b", 3, 500], // 2nd is taken, so b takes 3rd
+      ["c", null, 0],
+      ["d", null, 0],
+    ]);
+    // Lead VA board with pass down: top team under 500 still collects 2nd; nobody gets 1st
+    expect(won(rankBoard([e("x", 400, 1), e("y", 30, 2), e("z", 5, 3)], { ...LVA, passDown: true }))).toEqual([
+      ["x", 2, 1000],
+      ["y", 3, 500],
+      ["z", null, 0],
+    ]);
+    // Same minimum everywhere: pass down changes nothing when the top 3 all qualify
+    const all = [e("a", 300, 1), e("b", 250, 2), e("c", 210, 3), e("d", 205, 4)];
+    expect(won(rankBoard(all, { ...VA, passDown: true }))).toEqual(won(rankBoard(all, VA)));
+    // ...and when 3rd falls short, pass down gives it to nobody (everyone below has fewer)
+    expect(won(rankBoard([e("a", 300, 1), e("b", 250, 2), e("c", 150, 3), e("d", 100, 4)], { ...VA, passDown: true }))[2]).toEqual(["c", null, 0]);
+  });
+
+  it("viewer progress line", () => {
+    const r = rankBoard([e("a", 250, 1), e("me", 43, 2), e("z", 0)], VA);
+    expect(progressLine(r, "id_me", VA)).toBe("157 more convos to qualify for a prize.");
+    expect(progressLine(r, "id_z", VA)).toBe("200 more convos to qualify for a prize.");
+    expect(progressLine(r, "id_a", VA)).toBeNull(); // qualified for every place
+    const l = rankBoard([e("t1", 420, 1), e("t2", 0)], LVA);
+    expect(progressLine(l, "id_t1", LVA)).toBe("80 more convos to qualify for 1st place.");
+    expect(progressLine(l, "id_t2", LVA)).toBe("1 more convo to qualify for a prize.");
+    expect(progressLine(r, "nobody", VA)).toBeNull();
   });
 });

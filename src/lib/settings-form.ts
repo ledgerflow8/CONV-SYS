@@ -28,6 +28,13 @@ export type SettingsFormInput = {
   prizeLeadVa1: string;
   prizeLeadVa2: string;
   prizeLeadVa3: string;
+  minVa1: string;
+  minVa2: string;
+  minVa3: string;
+  minLeadVa1: string;
+  minLeadVa2: string;
+  minLeadVa3: string;
+  prizePassDown: "no" | "yes";
 };
 
 export const PRIZE_FIELDS = {
@@ -35,10 +42,16 @@ export const PRIZE_FIELDS = {
   leadVa: ["prizeLeadVa1", "prizeLeadVa2", "prizeLeadVa3"],
 } as const;
 
+export const MIN_FIELDS = {
+  va: ["minVa1", "minVa2", "minVa3"],
+  leadVa: ["minLeadVa1", "minLeadVa2", "minLeadVa3"],
+} as const;
+
 export type SettingsFormErrors = Partial<Record<keyof SettingsFormInput, string>>;
 
 const MAX_RATE_CENTS = 10_000; // $100 per convo: guards against a typo like "25" meaning cents
 const MAX_PRIZE_CENTS = 100_000; // $1,000 per prize
+const MAX_MIN_CONVOS = 1_000_000;
 
 export function parseSettingsForm(
   input: SettingsFormInput,
@@ -91,6 +104,15 @@ export function parseSettingsForm(
   };
   const leaderboardPrizes = { va: PRIZE_FIELDS.va.map(prize), leadVa: PRIZE_FIELDS.leadVa.map(prize) };
 
+  const minimum = (field: (typeof MIN_FIELDS)[keyof typeof MIN_FIELDS][number]) => {
+    const raw = input[field].trim();
+    const n = raw === "" ? 0 : Number(raw);
+    if (!/^\d*$/.test(raw) || !Number.isInteger(n) || n > MAX_MIN_CONVOS) errors[field] = "Whole number of convos (0 = no minimum)";
+    return Number.isInteger(n) ? n : 0;
+  };
+  const leaderboardMinConvos = { va: MIN_FIELDS.va.map(minimum), leadVa: MIN_FIELDS.leadVa.map(minimum) };
+  if (input.prizePassDown !== "yes" && input.prizePassDown !== "no") errors.prizePassDown = "Pick one.";
+
   if (Object.keys(errors).length) return { ok: false, errors };
   return {
     ok: true,
@@ -103,6 +125,8 @@ export function parseSettingsForm(
       clickMatchWindowMin: windowMin,
       supportTelegram: support ?? "",
       leaderboardPrizes,
+      leaderboardMinConvos,
+      leaderboardPassDown: input.prizePassDown === "yes",
     },
   };
 }

@@ -14,16 +14,16 @@ let peer = 0;
 /** `n` qualified convos for a VA, qualified at `start`, start+1min, … inside the given week. */
 async function convos(va: { id: string; parentId: string | null }, n: number, week: { id: string; startsAt: Date }, startMin = 60) {
   const lva = await db.user.findUniqueOrThrow({ where: { id: va.parentId! }, select: { id: true, parentId: true } });
-  for (let i = 0; i < n; i++) {
-    const qualifiedAt = new Date(week.startsAt.getTime() + (startMin + i) * 60_000);
-    await db.convo.create({
-      data: {
+  await db.convo.createMany({
+    data: Array.from({ length: n }, (_, i) => {
+      const qualifiedAt = new Date(week.startsAt.getTime() + (startMin + i) * 60_000);
+      return {
         accountRef: "acct",
         peerId: `p${++peer}`,
         firstMsgAt: qualifiedAt,
         repliedAt: qualifiedAt,
         qualifiedAt,
-        status: "QUALIFIED",
+        status: "QUALIFIED" as const,
         vaId: va.id,
         leadVaId: lva.id,
         leadManagerId: lva.parentId,
@@ -31,9 +31,9 @@ async function convos(va: { id: string; parentId: string | null }, n: number, we
         vaCents: 25,
         leadVaCents: 10,
         lmCents: 0,
-      },
-    });
-  }
+      };
+    }),
+  });
 }
 
 /** Director → LM → `teams` Lead VAs, each with `vasPer` VAs. */
@@ -54,6 +54,8 @@ async function org(teams: number, vasPer: number) {
 beforeEach(async () => {
   await resetDb();
   peer = 0;
+  // Most tests here are about ranking and paying once; minimums are tested in their own block.
+  await setSetting("leaderboardMinConvos", { va: [0, 0, 0], leadVa: [0, 0, 0] });
 });
 
 describe("live leaderboard", () => {
@@ -197,5 +199,68 @@ describe("prizes at week lock", () => {
     await lockWeek(null, week.id);
     expect(await db.leaderboardWin.count()).toBe(0);
     expect(await pastWinners()).toEqual([]);
+  });
+});
+
+describe("prize minimums at week lock", () => {
+  /** team 0: VAs on 200 and 199 (team 399); team 1: a VA on 5. */
+  async function setup() {
+    await setSetting("leaderboardPrizes", { va: [1000, 800, 500], leadVa: [3000, 1000, 500] });
+    await setSetting("leaderboardMinConvos", { va: [200, 200, 200], leadVa: [500, 0, 0] }); // the client's defaults
+    const o = await org(2, 2);
+    const week = await db.week.create({ data: lastWeek() });
+    const [onTarget, oneShort] = o.lvas[0].vas;
+    const small = o.lvas[1].vas[0];
+    await convos(onTarget, 200, week);
+    await convos(oneShort, 199, week, 1000);
+    await convos(small, 5, week, 2000);
+    return { o, week, onTarget, oneShort, small };
+  }
+  const bonus = async (userId: string, weekId: string) =>
+    (await db.payout.findUniqueOrThrow({ where: { userId_weekId: { userId, weekId } } })).bonusCents;
+  const wins = async (weekId: string) =>
+    (await db.leaderboardWin.findMany({ where: { weekId }, orderBy: [{ board: "asc" }, { rank: "asc" }] })).map((w) => [w.board, w.rank, w.userId, w.prizeCents]);
+
+  it("below the minimum: no prize, not passed down; at the minimum: prize", async () => {
+    const { o, week, onTarget, oneShort, small } = await setup();
+    await lockWeek(null, week.id);
+
+    expect(await bonus(onTarget.id, week.id)).toBe(1000); // exactly 200
+    expect(await bonus(oneShort.id, week.id)).toBe(0); // 199: 2nd not paid
+    expect(await bonus(small.id, week.id)).toBe(0); // 3rd place, 5 convos: not paid
+    expect(await bonus(o.lvas[0].lva.id, week.id)).toBe(0); // 399 team convos: 1st needs 500
+    expect(await bonus(o.lvas[1].lva.id, week.id)).toBe(1000); // 2nd has no minimum
+    expect(await wins(week.id)).toEqual([
+      ["LEAD_VA", 2, o.lvas[1].lva.id, 1000],
+      ["VA", 1, onTarget.id, 1000],
+    ]);
+  });
+
+  it("pass-down setting: unmet prizes go to the next person who meets the minimum", async () => {
+    const { o, week, onTarget, oneShort } = await setup();
+    await setSetting("leaderboardPassDown", true);
+    await lockWeek(null, week.id);
+
+    expect(await bonus(onTarget.id, week.id)).toBe(1000);
+    expect(await bonus(oneShort.id, week.id)).toBe(0); // nobody else reaches 200, so 2nd/3rd stay unpaid
+    // 1st (500) has no taker; the 399 team takes 2nd, the next team takes 3rd
+    expect(await wins(week.id)).toEqual([
+      ["LEAD_VA", 2, o.lvas[0].lva.id, 1000],
+      ["LEAD_VA", 3, o.lvas[1].lva.id, 500],
+      ["VA", 1, onTarget.id, 1000],
+    ]);
+  });
+
+  it("the live board shows no prize for someone below the minimum", async () => {
+    await setSetting("leaderboardMinConvos", { va: [200, 200, 200], leadVa: [500, 0, 0] });
+    const o = await org(1, 2);
+    const week = await db.week.create({ data: thisWeek() });
+    await convos(o.lvas[0].vas[0], 157, week);
+    await convos(o.lvas[0].vas[1], 200, week, 500);
+    const board = await liveBoard("VA", (await currentPeriods()).week);
+    expect(board.map((r) => [r.convos, r.prizePlace, r.prizeCents])).toEqual([
+      [200, 1, 1000],
+      [157, null, 0],
+    ]);
   });
 });

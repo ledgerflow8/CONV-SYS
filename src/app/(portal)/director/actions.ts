@@ -142,6 +142,13 @@ const settingsInput = z.object({
   prizeLeadVa1: z.string().max(20),
   prizeLeadVa2: z.string().max(20),
   prizeLeadVa3: z.string().max(20),
+  minVa1: z.string().max(20),
+  minVa2: z.string().max(20),
+  minVa3: z.string().max(20),
+  minLeadVa1: z.string().max(20),
+  minLeadVa2: z.string().max(20),
+  minLeadVa3: z.string().max(20),
+  prizePassDown: z.enum(["no", "yes"]),
 });
 
 export async function saveSettingsAction(

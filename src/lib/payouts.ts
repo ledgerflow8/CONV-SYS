@@ -5,7 +5,7 @@ import { db } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { fail, type Result } from "@/lib/action-result";
 import type { CurrentUser } from "@/lib/auth/session";
-import { settleBoards } from "@/lib/leaderboard";
+import { prizeRules, settleBoards } from "@/lib/leaderboard";
 import { getSetting } from "@/lib/settings";
 import { normalizeTxHash, normalizeWallet } from "@/lib/wallet";
 import { weekBounds } from "@/lib/weeks";
@@ -36,11 +36,12 @@ export type LockSummary = { weekId: string; payouts: number; totalCents: number;
 /**
  * Locks a finished week and generates its payouts, in one transaction.
  * Payouts come from the week's QUALIFIED convos and their snapshotted rates; wallets are snapshotted now.
- * Leaderboard winners get their prize added as bonusCents (included in amountCents), exactly once.
+ * Leaderboard winners (who met their place's minimum) get the prize added as bonusCents
+ * (included in amountCents), exactly once.
  */
 export async function lockWeek(actorId: string | null, weekId: string, now = new Date()): Promise<Result<LockSummary>> {
   // Read before the transaction: production has a single pooled connection, which the transaction holds.
-  const prizes = await getSetting("leaderboardPrizes");
+  const rules = await prizeRules();
   try {
     const summary = await db.$transaction(async (tx) => {
       // FOR UPDATE: waits for any ingest holding FOR SHARE on this week, and blocks new ones until we commit.
@@ -67,7 +68,7 @@ export async function lockWeek(actorId: string | null, weekId: string, now = new
       await collect("leadVaId", "leadVaCents", "LEAD_VA");
       await collect("leadManagerId", "lmCents", "LEAD_MANAGER");
 
-      const wins = await settleBoards(tx, weekId, prizes);
+      const wins = await settleBoards(tx, weekId, rules);
       for (const w of wins.filter((w) => w.prizeCents > 0)) {
         const line = lines.find((l) => l.userId === w.userId && l.role === w.board);
         if (line) {

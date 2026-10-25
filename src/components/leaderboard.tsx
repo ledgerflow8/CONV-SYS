@@ -1,7 +1,7 @@
 // Weekly leaderboards (server components; the page's LiveRefresh keeps them live).
 import { Trophy } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { boardRows, MEDAL, standingLine, type Ranked } from "@/lib/leaderboard-rank";
+import { boardRows, MEDAL, progressLine, standingLine, type PrizeRules, type Ranked } from "@/lib/leaderboard-rank";
 import { formatCents } from "@/lib/money";
 import { formatPeriod } from "@/lib/time";
 import { cn } from "@/lib/utils";
@@ -49,6 +49,7 @@ export function LeaderboardCard({
   ranked,
   highlight = [],
   viewerId,
+  rules,
   full = false,
   emptyText,
 }: {
@@ -56,6 +57,7 @@ export function LeaderboardCard({
   ranked: Ranked[];
   highlight?: string[];
   viewerId?: string;
+  rules?: PrizeRules; // with viewerId: shows their progress toward a prize minimum
   full?: boolean;
   emptyText: string;
 }) {
@@ -63,12 +65,14 @@ export function LeaderboardCard({
   const { top, extra } = boardRows(ranked, marked);
   const rest = full ? ranked.slice(top.length) : extra;
   const standing = viewerId ? standingLine(ranked, viewerId) : null;
+  const progress = viewerId && rules ? progressLine(ranked, viewerId, rules) : null;
 
   return (
     <Card className="mb-4 gap-3 pb-0">
       <CardHeader>
         <CardTitle className="text-base">{title}</CardTitle>
         {standing && <CardDescription className="text-foreground">{standing}</CardDescription>}
+        {progress && <CardDescription className="font-medium text-amber-700 dark:text-amber-300">{progress}</CardDescription>}
       </CardHeader>
       <CardContent className="px-0">
         {ranked.length === 0 ? (
@@ -110,24 +114,38 @@ export function LeaderboardCard({
   );
 }
 
-export function PrizesCard({ boards }: { boards: { label: string; prizes: number[] }[] }) {
+export function PrizesCard({ boards, unit = "convos" }: { boards: { label: string; rules: PrizeRules }[]; unit?: string }) {
+  const passDown = boards[0]?.rules.passDown ?? false;
   return (
     <Card className="mb-4 gap-3">
       <CardHeader>
         <CardTitle className="text-base">Prizes this week</CardTitle>
-        <CardDescription>Added to the winners&apos; payout when the week locks (Monday 00:00).</CardDescription>
+        <CardDescription>
+          Added to the winners&apos; payout when the week locks (Monday 00:00).{" "}
+          {passDown
+            ? "If the person in a prize place is below its minimum, the prize goes to the next person who meets it."
+            : "A prize is only paid if the person in that place meets its minimum."}
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         {boards.map((b) => (
           <div key={b.label}>
             {boards.length > 1 && <p className="mb-1.5 text-xs font-medium text-muted-foreground">{b.label}</p>}
             <div className="grid grid-cols-3 gap-2 text-center">
-              {b.prizes.map((cents, i) => (
-                <div key={i} className="rounded-lg bg-muted/60 py-2">
-                  <div className="text-lg">{MEDAL[i]}</div>
-                  <div className="font-bold tabular-nums">{cents > 0 ? formatCents(cents) : "—"}</div>
-                </div>
-              ))}
+              {b.rules.prizes.map((cents, i) => {
+                const min = b.rules.minConvos[i] ?? 0;
+                return (
+                  <div key={i} className="rounded-lg bg-muted/60 px-1 py-2">
+                    <div className="text-lg">{MEDAL[i]}</div>
+                    <div className="font-bold tabular-nums">{cents > 0 ? formatCents(cents) : "—"}</div>
+                    {cents > 0 && min > 0 && (
+                      <div className="text-xs text-muted-foreground tabular-nums">
+                        Min. {min.toLocaleString("en-US")} {unit}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         ))}

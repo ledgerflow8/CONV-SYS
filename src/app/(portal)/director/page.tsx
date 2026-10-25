@@ -7,10 +7,9 @@ import { StatCard } from "@/components/stat-card";
 import { TopBar } from "@/components/shell/top-bar";
 import { requireRole } from "@/lib/auth/session";
 import { db } from "@/lib/db";
-import { liveBoard, pastWinners, prizesFor } from "@/lib/leaderboard";
+import { liveBoard, pastWinners, prizeRules } from "@/lib/leaderboard";
 import { formatCents } from "@/lib/money";
 import { scopeFor } from "@/lib/scope";
-import { getSetting } from "@/lib/settings";
 import {
   activeVaCount,
   currentPeriods,
@@ -50,12 +49,8 @@ export default async function DirectorOverview() {
       },
     }),
   ]);
-  const [vaBoard, lvaBoard, prizes, past] = await Promise.all([
-    liveBoard("VA", week),
-    liveBoard("LEAD_VA", week),
-    getSetting("leaderboardPrizes"),
-    pastWinners(),
-  ]);
+  const rules = await prizeRules();
+  const [vaBoard, lvaBoard, past] = await Promise.all([liveBoard("VA", week, rules), liveBoard("LEAD_VA", week, rules), pastWinners()]);
   const activeModels = await db.model.findMany({ where: { active: true }, orderBy: { name: "asc" }, select: { id: true, name: true } });
   const owedTotal = weekTotals.vaCents + weekTotals.leadVaCents + weekTotals.lmCents;
 
@@ -97,8 +92,8 @@ export default async function DirectorOverview() {
       <LeaderboardCard title="Lead VAs this week" ranked={lvaBoard} full emptyText="No active Lead VAs yet." />
       <PrizesCard
         boards={[
-          { label: "VAs", prizes: prizesFor(prizes, "VA") },
-          { label: "Lead VAs", prizes: prizesFor(prizes, "LEAD_VA") },
+          { label: "VAs", rules: rules.VA },
+          { label: "Lead VAs (team convos)", rules: rules.LEAD_VA },
         ]}
       />
       <PastWinnersCard weeks={past} timeZone={timeZone} />
