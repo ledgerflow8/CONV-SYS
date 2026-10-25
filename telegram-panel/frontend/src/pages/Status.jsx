@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, RefreshCw } from "lucide-react";
+import { AlertTriangle, CheckCircle2, HardDrive, RefreshCw } from "lucide-react";
 import { api } from "../api.js";
 import { ago } from "../time.js";
 import Toggle from "../components/Toggle.jsx";
@@ -34,6 +34,197 @@ function NumberSetting({ label, value, onSave }) {
         className="h-9 w-24 rounded-lg border bg-background px-3 text-right outline-none focus:ring-2 focus:ring-ring"
       />
     </label>
+  );
+}
+
+const mb = (n) => `${(n / (1024 * 1024)).toLocaleString("en-US", { maximumFractionDigits: n < 10 * 1024 * 1024 ? 1 : 0 })} MB`;
+
+function DiskCard({ disk, onCompacted }) {
+  const [state, setState] = useState({ busy: false, confirm: false, msg: "", err: "" });
+  const tone = disk.level === "critical" ? "bg-red-500" : disk.level === "warn" ? "bg-amber-500" : "bg-emerald-500";
+  const compact = async () => {
+    setState({ busy: true, confirm: false, msg: "", err: "" });
+    try {
+      const r = await api("/api/system/db/compact", { method: "POST" });
+      setState({ busy: false, confirm: false, err: "", msg: `Database compacted: ${mb(r.before_bytes)} → ${mb(r.after_bytes)}.` });
+      onCompacted();
+    } catch (e) {
+      setState({ busy: false, confirm: false, msg: "", err: e.message });
+    }
+  };
+  const b = disk.breakdown;
+  return (
+    <section className="space-y-3 rounded-xl border bg-card p-4">
+      <div className="flex items-center justify-between">
+        <h2 className="inline-flex items-center gap-2 font-medium">
+          <HardDrive className="size-4" /> Data disk
+        </h2>
+        <span className="text-sm tabular-nums">{disk.used_pct}% used</span>
+      </div>
+      {disk.level !== "ok" && (
+        <p className="flex gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+          {disk.level === "critical" ? "Disk almost full: new messages may fail to save." : "Disk over 80% full."} Grow the disk on Render
+          (Settings → Disks).
+        </p>
+      )}
+      <div className="h-2 overflow-hidden rounded-full bg-secondary">
+        <div className={`h-full ${tone}`} style={{ width: `${Math.min(100, disk.used_pct)}%` }} />
+      </div>
+      <p className="text-sm text-muted-foreground">
+        {mb(disk.free_bytes)} free of {mb(disk.total_bytes)} · database {mb(b.database + b.database_wal)} · media {mb(b.ai_media)} · avatars{" "}
+        {mb(b.avatars)}
+      </p>
+      <p className="text-xs text-muted-foreground">
+        Cleanup runs hourly{disk.housekeeping.last_run_at ? `, last ${ago(disk.housekeeping.last_run_at)}` : ""}: old messages (kept: 30 days and
+        each chat&apos;s latest 50), delivered portal events after 7 days, activity after 30 days, leftover media.
+        {disk.housekeeping.last_error && <span className="text-destructive"> Last cleanup failed: {disk.housekeeping.last_error}</span>}
+      </p>
+      {state.confirm ? (
+        <div className="space-y-2 rounded-lg border p-3 text-sm">
+          <p>Compacting rewrites the database to give freed space back to the disk. New messages wait while it runs (seconds to a minute). Do it at a quiet time.</p>
+          <div className="flex gap-2">
+            <button type="button" onClick={compact} className="h-8 rounded-lg bg-primary px-3 font-medium text-primary-foreground">
+              Compact now
+            </button>
+            <button type="button" onClick={() => setState((s) => ({ ...s, confirm: false }))} className="h-8 rounded-lg border px-3">
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          disabled={state.busy}
+          onClick={() => setState((s) => ({ ...s, confirm: true, msg: "", err: "" }))}
+          className="h-8 rounded-lg border px-3 text-sm disabled:opacity-50"
+        >
+          {state.busy ? "Compacting…" : "Compact database"}
+        </button>
+      )}
+      {state.msg && <p className="text-sm text-emerald-600">{state.msg}</p>}
+      {state.err && <p className="text-sm text-destructive">{state.err}</p>}
+    </section>
+  );
+}
+
+function defaultSince() {
+  // Today 15:30 UTC: just before the 2026-10-25 disk-full outage began (~16:00 UTC).
+  return `${new Date().toISOString().slice(0, 10)}T15:30`;
+}
+
+function RecoveryCard() {
+  const [since, setSince] = useState(defaultSince);
+  const [job, setJob] = useState(null);
+  const [confirm, setConfirm] = useState(false);
+  const [err, setErr] = useState("");
+  const poll = useRef(null);
+
+  const follow = useCallback(() => {
+    clearInterval(poll.current);
+    poll.current = setInterval(async () => {
+      try {
+        const r = await api("/api/system/recover");
+        setJob(r.recovery);
+        if (!r.recovery?.running) clearInterval(poll.current);
+      } catch (e) {
+        setErr(e.message);
+        clearInterval(poll.current);
+      }
+    }, 2000);
+  }, []);
+
+  useEffect(() => {
+    api("/api/system/recover")
+      .then((r) => {
+        setJob(r.recovery);
+        if (r.recovery?.running) follow();
+      })
+      .catch(() => {});
+    return () => clearInterval(poll.current);
+  }, [follow]);
+
+  const start = async (dryRun) => {
+    setErr("");
+    setConfirm(false);
+    try {
+      const r = await api("/api/system/recover", { method: "POST", body: { since: `${since}:00Z`, dry_run: dryRun } });
+      setJob(r.recovery);
+      follow();
+    } catch (e) {
+      setErr(e.message);
+    }
+  };
+
+  const t = job?.totals;
+  return (
+    <section className="space-y-3 rounded-xl border bg-card p-4">
+      <h2 className="font-medium">Recover missed convos</h2>
+      <p className="text-sm text-muted-foreground">
+        Re-reads each connected account&apos;s chats since the time below and sends the portal any new convos or replies that failed to
+        save. Safe to repeat: nothing is sent twice. No messages are sent to fans.
+      </p>
+      <label className="flex items-center justify-between gap-3 text-sm">
+        <span>Since (UTC)</span>
+        <input
+          type="datetime-local"
+          value={since}
+          onChange={(e) => setSince(e.target.value)}
+          className="h-9 rounded-lg border bg-background px-2 outline-none focus:ring-2 focus:ring-ring"
+        />
+      </label>
+      {confirm ? (
+        <div className="space-y-2 rounded-lg border p-3 text-sm">
+          <p>Queue the missing events for the portal?</p>
+          <div className="flex gap-2">
+            <button type="button" onClick={() => start(false)} className="h-8 rounded-lg bg-primary px-3 font-medium text-primary-foreground">
+              Recover
+            </button>
+            <button type="button" onClick={() => setConfirm(false)} className="h-8 rounded-lg border px-3">
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex gap-2">
+          <button type="button" disabled={job?.running} onClick={() => start(true)} className="h-8 rounded-lg border px-3 text-sm disabled:opacity-50">
+            Preview
+          </button>
+          <button
+            type="button"
+            disabled={job?.running}
+            onClick={() => setConfirm(true)}
+            className="h-8 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50"
+          >
+            Recover
+          </button>
+        </div>
+      )}
+      {err && <p className="text-sm text-destructive">{err}</p>}
+      {job && (
+        <div className="space-y-1 rounded-lg bg-secondary/60 p-3 text-sm">
+          <p className="font-medium">
+            {job.running ? "Running" : job.dry_run ? "Preview" : "Done"} · {job.accounts_done}/{job.accounts_total} accounts
+          </p>
+          <p>
+            {t.chats_scanned} chats checked · {t.messages_restored} messages {job.dry_run ? "to restore" : "restored"}
+          </p>
+          <p>
+            Missing events {job.dry_run ? "found" : "queued"}: <strong>{t.first_events}</strong> new convos, <strong>{t.reply_events}</strong>{" "}
+            replies
+          </p>
+          <p className="text-muted-foreground">{t.unanswered} chats end with a fan message (no reply yet).</p>
+          {job.accounts
+            .filter((a) => a.error)
+            .map((a) => (
+              <p key={a.account_id} className="text-destructive">
+                @{a.username ?? a.account_id}: {a.error}
+              </p>
+            ))}
+          {job.error && <p className="text-destructive">{job.error}</p>}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -111,6 +302,8 @@ export default function Status() {
       </header>
 
       {error && <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
+
+      {status?.disk && <DiskCard disk={status.disk} onCompacted={load} />}
 
       {stats && (
         <section className="space-y-3 rounded-xl border bg-card p-4">
@@ -215,6 +408,8 @@ export default function Status() {
           </>
         )}
       </section>
+
+      <RecoveryCard />
 
       {settings && (
         <section className="space-y-3 rounded-xl border bg-card p-4">

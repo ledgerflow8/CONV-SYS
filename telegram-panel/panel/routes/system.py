@@ -1,11 +1,16 @@
 """Status screen: portal sync health, AI state, recent activity, retry and settings (PLAN.md §6)."""
 
+import asyncio
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select, update
 
 from panel.auth import require_login
 from panel.db import get_setting, set_setting
+from panel.housekeeping import compact, disk_usage
+from panel.recovery import RecoveryJob, recover
 from panel.models import Activity, OutboxItem, utcnow
 from panel.portal import LAST_ERROR_KEY, LAST_OK_KEY, outbox_counts
 
@@ -64,8 +69,61 @@ async def status(request: Request) -> dict:
             "credit_over_until": paused.isoformat() if paused else None,
             "last_error": ai.last_error if ai else None,
         },
+        "disk": _disk(request),
         "version": VERSION,
     }
+
+
+def _disk(request: Request) -> dict:
+    out = disk_usage(request.app.state.settings.data_dir)
+    hk = getattr(request.app.state, "housekeeper", None)
+    out["housekeeping"] = {
+        "last_run_at": hk.last_run_at.isoformat() if hk and hk.last_run_at else None,
+        "last_result": vars(hk.last_result) if hk and hk.last_result else None,
+        "last_error": hk.last_error if hk else None,
+    }
+    return out
+
+
+@router.post("/db/compact")
+async def compact_db(request: Request) -> dict:
+    """VACUUM the database (blocks writes while it runs: use at a quiet moment)."""
+    try:
+        return await compact(request.app.state.engine, request.app.state.settings.data_dir)
+    except RuntimeError as e:
+        raise HTTPException(409, str(e)) from e
+
+
+class RecoverBody(BaseModel):
+    since: datetime
+    dry_run: bool = True
+
+
+@router.post("/recover")
+async def start_recovery(body: RecoverBody, request: Request) -> dict:
+    """Re-scan connected accounts' chats since `since` and queue missing convo events (recovery.py).
+    Runs in the background; poll GET /recover for progress."""
+    current: RecoveryJob | None = request.app.state.recovery
+    if current is not None and current.running:
+        raise HTTPException(409, "A recovery is already running.")
+    since = body.since if body.since.tzinfo else body.since.replace(tzinfo=timezone.utc)
+    since = since.astimezone(timezone.utc)
+    if since > utcnow():
+        raise HTTPException(400, "'since' is in the future.")
+    if (utcnow() - since).days > 7:
+        raise HTTPException(400, "Recover at most the last 7 days at a time.")
+    job = RecoveryJob(since=since, dry_run=body.dry_run)
+    request.app.state.recovery = job
+    task = asyncio.create_task(recover(request.app.state.service, job))
+    request.app.state.background.add(task)
+    task.add_done_callback(request.app.state.background.discard)
+    return {"recovery": job.as_dict()}
+
+
+@router.get("/recover")
+async def recovery_status(request: Request) -> dict:
+    job: RecoveryJob | None = request.app.state.recovery
+    return {"recovery": job.as_dict() if job else None}
 
 
 @router.get("/stats")

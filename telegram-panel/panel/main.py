@@ -19,6 +19,7 @@ from panel.capital import CapitalClient
 from panel.config import Settings, get_settings
 from panel.crypto import Crypto
 from panel.db import init_db, make_engine, make_sessionmaker
+from panel.housekeeping import Housekeeper
 from panel.lock import InstanceLock
 from panel.portal import OutboxWorker, PortalConfig
 from panel.routes import accounts as account_routes
@@ -50,6 +51,7 @@ def create_app(settings: Settings | None = None, dist: Path = DIST, client_facto
             await init_db(engine)
             sessionmaker = make_sessionmaker(engine)
             app.state.sessionmaker = sessionmaker
+            app.state.engine = engine
             manager = AccountManager(client_factory or telethon_factory)
             app.state.manager = manager
             app.state.service = Service(
@@ -79,6 +81,11 @@ def create_app(settings: Settings | None = None, dist: Path = DIST, client_facto
             await app.state.service.backfill_leads()  # one-time (idempotent): leads from already-converted chats
             await app.state.service.connect_powered_on()
             app.state.background.add(asyncio.create_task(worker.run()))
+            # Keeps DATA_DIR bounded: prunes old rows, sweeps leftover media, checkpoints the WAL.
+            housekeeper = Housekeeper(engine, sessionmaker, settings.data_dir)
+            app.state.housekeeper = housekeeper
+            app.state.recovery = None  # the last/current convo recovery job (routes/system.py)
+            app.state.background.add(asyncio.create_task(housekeeper.run()))
             try:
                 yield
             finally:

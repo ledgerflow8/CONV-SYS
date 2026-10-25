@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from panel.tg.client import AccountInfo, ConnectParams, IncomingMessage, ProfileInfo, TgError
+from panel.tg.client import AccountInfo, ChatScan, ConnectParams, IncomingMessage, ProfileInfo, TgError
 
 
 @dataclass
@@ -27,6 +27,9 @@ class FakeAccount:
     last_name: str | None = None
     about: str | None = None
     username_floodwait: int | None = None  # when set, check_username raises a FloodWait (limited)
+    # Full Telegram history per fan (peer id str → messages oldest first), for recovery scans.
+    history: dict[str, list[IncomingMessage]] = field(default_factory=dict)
+    scan_error: TgError | None = None  # raised by recent_peers (e.g. a long FloodWait)
 
 
 class FakeClient:
@@ -114,6 +117,20 @@ class FakeClient:
         p = Path(dest_dir) / f"{peer_id}_{tg_msg_id}.jpg"
         p.write_bytes(data)
         return p
+
+    # ── recovery ───────────────────────────────────────────────────────────────
+    async def recent_peers(self, since: datetime):
+        if self._fake.scan_error:
+            raise self._fake.scan_error
+        chats = [msgs for msgs in self._fake.history.values() if msgs and msgs[-1].at >= since]
+        chats.sort(key=lambda msgs: msgs[-1].at, reverse=True)
+        return [msgs[-1].peer for msgs in chats]
+
+    async def scan_chat(self, peer_id: int, since: datetime) -> ChatScan:
+        msgs = self._fake.history[str(peer_id)]
+        first_in = next((m.at for m in msgs if not m.out), None)
+        first_reply = next((m.at for m in msgs if m.out and first_in is not None and m.at >= first_in), None)
+        return ChatScan(peer=msgs[-1].peer, first_in=first_in, first_reply=first_reply, recent=[m for m in msgs if m.at >= since])
 
     # ── profile editing ────────────────────────────────────────────────────────
     async def get_profile(self) -> ProfileInfo:

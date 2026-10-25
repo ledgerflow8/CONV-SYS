@@ -19,6 +19,8 @@ def make_engine(db_path: Path) -> AsyncEngine:
         cur.execute("PRAGMA journal_mode=WAL")
         cur.execute("PRAGMA foreign_keys=ON")
         cur.execute("PRAGMA busy_timeout=5000")
+        # After each checkpoint, truncate the WAL back to at most 64 MB instead of leaving it at its peak.
+        cur.execute("PRAGMA journal_size_limit=67108864")
         cur.close()
 
     return engine

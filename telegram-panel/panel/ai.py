@@ -140,9 +140,11 @@ class AiEngine:
         if req is None:
             return
 
-        file_path = await self._maybe_download_fan_media(account_id, peer_id, req)
+        file_path: str | None = None
         try:
             async with self._sem:
+                # Download inside the semaphore: at most MAX_IN_FLIGHT fan files on disk at once.
+                file_path = await self._maybe_download_fan_media(account_id, peer_id, req)
                 resp = await self.capital.generate_response(
                     model_id=req["model_id"],
                     preset_id=req["preset_id"],

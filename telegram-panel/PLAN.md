@@ -355,3 +355,14 @@ All settled on 2026-10-14. Nothing is waiting on the client or Capitalbot. ✅ m
 15. **Rate limits:** at most 10 Capitalbot calls in flight across the panel, and the per-chat debounce keeps each fan far under 60/min. A `429` is shown on Status.
 16. **`messages` / `media` fields:** ignored; only `content` is read.
 17. **Docs version:** `CapitalAI_Docs.md` (in this folder) is the version we build against. If Capitalbot changes behaviour, the doc gets updated first.
+
+## 12. Disk housekeeping and recovery (2026-10-25)
+
+The 1 GB data disk filled (~16:00 UTC, 2026-10-25): every SQLite write failed, so messages, new chats and their portal events weren't saved (and the AI wasn't woken). Grown to 5 GB, plus:
+
+- **Housekeeping** (`panel/housekeeping.py`, hourly, first pass 60 s after startup): message rows older than 30 days go except each chat's newest 50 (the AI's history); AI rows keep their row, minus text, so the all-time "AI replies" stat holds. Delivered outbox rows go after 7 days, failed after 30, pending never. Activity and import jobs after 30 days. `ai_media/` leftovers older than 30 min (all of it at startup). Orphaned or > 2 MB avatars. Then `wal_checkpoint(TRUNCATE)`; `journal_size_limit` caps the WAL at 64 MB.
+- **Media:** fan media over 50 MB (Capitalbot's limit) is never downloaded, and downloads happen inside the AI semaphore (at most 10 on disk at once).
+- **VACUUM** is a Status button ("Compact database"), not automatic: it blocks writes while it runs and needs free space the size of the DB. Freed pages are reused anyway.
+- **Status → Data disk:** usage bar, breakdown, warning at ≥ 80 %, critical at ≥ 90 % (also logged to Activity hourly).
+- **Recovery** (`panel/recovery.py`; Status → "Recover missed convos", or `python -m panel recover --since … [--apply]`): re-reads connected accounts' chats since a time over their live connections (never a second process), restores message rows, fills missing first-message/first-reply times and queues the missing convo events through the outbox. Idempotent; dry run by default. Sends nothing to fans.
+

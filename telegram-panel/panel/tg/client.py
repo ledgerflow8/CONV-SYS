@@ -69,6 +69,20 @@ class IncomingMessage:
 
 
 @dataclass(frozen=True)
+class ChatScan:
+    """One chat read back from Telegram (recovery after messages failed to save, PLAN.md §4.3)."""
+
+    peer: PeerInfo
+    first_in: datetime | None  # the fan's first message ever (None: the account messaged first)
+    first_reply: datetime | None  # the account's first message at or after it
+    recent: list[IncomingMessage]  # messages since the scan's `since`, oldest first
+
+
+# Capitalbot accepts files up to 50 MB; anything bigger is never downloaded (it would only fill the disk).
+MAX_MEDIA_BYTES = 50 * 1024 * 1024
+
+
+@dataclass(frozen=True)
 class ConnectParams:
     session: str  # Telethon StringSession
     api_id: int
@@ -153,6 +167,9 @@ class TgClient(Protocol):
     async def mark_read(self, peer_id: int) -> None: ...
     async def typing(self, peer_id: int, seconds: float) -> None: ...
     async def download_message_media(self, peer_id: int, tg_msg_id: int, dest_dir: Path) -> Path | None: ...
+    # Recovery: read recent private chats back from Telegram (read-only; raises TgError).
+    async def recent_peers(self, since: datetime) -> list[PeerInfo]: ...
+    async def scan_chat(self, peer_id: int, since: datetime) -> ChatScan: ...
     # Profile editing (uses this same connection; never opens a second one).
     async def get_profile(self) -> ProfileInfo: ...
     async def check_username(self, username: str) -> bool: ...
@@ -332,9 +349,58 @@ class TelethonClient:
         msg = await self._c.get_messages(peer_id, ids=tg_msg_id)
         if msg is None or not msg.media:
             return None
+        size = getattr(msg.file, "size", None) if msg.file else None
+        if size is not None and size > MAX_MEDIA_BYTES:
+            return None  # over Capitalbot's limit: never written to disk
         dest_dir.mkdir(parents=True, exist_ok=True)
+        # A failed download can leave a partial file behind; the housekeeping media sweep removes it.
         got = await msg.download_media(file=str(dest_dir) + "/")
         return Path(got) if got else None
+
+    # ── recovery (read-only) ──────────────────────────────────────────────────
+    async def recent_peers(self, since: datetime) -> list[PeerInfo]:
+        """Fans in private chats with any message at or after `since`, newest first."""
+        out: list[PeerInfo] = []
+        try:
+            async for d in self._c.iter_dialogs():
+                if d.date is None:
+                    continue
+                if d.date < since:
+                    if d.pinned:
+                        continue  # pinned chats sit on top regardless of date
+                    break  # dialogs come newest first
+                if d.is_user and _is_fan(d.entity):
+                    out.append(_peer_info(d.entity))
+        except Exception as e:
+            raise classify(e) from e
+        return out
+
+    async def scan_chat(self, peer_id: int, since: datetime) -> ChatScan:
+        try:
+            entity = await self._c.get_entity(peer_id)
+            first_in: datetime | None = None
+            first_reply: datetime | None = None
+            async for m in self._c.iter_messages(entity, reverse=True, limit=200):
+                if m.date is None:
+                    continue
+                if not m.out and first_in is None:
+                    first_in = m.date
+                elif m.out and first_in is not None and first_reply is None and m.date >= first_in:
+                    first_reply = m.date
+                if first_in is not None and first_reply is not None:
+                    break
+            peer = _peer_info(entity)
+            recent: list[IncomingMessage] = []
+            async for m in self._c.iter_messages(entity, limit=100):
+                if m.date is None:
+                    continue
+                if m.date < since:
+                    break
+                recent.append(IncomingMessage(peer=peer, tg_msg_id=m.id, out=bool(m.out), kind=_kind(m), text=m.message or None, at=m.date))
+        except Exception as e:
+            raise classify(e) from e
+        recent.reverse()
+        return ChatScan(peer=peer, first_in=first_in, first_reply=first_reply, recent=recent)
 
     # ── profile editing (uses this same live connection) ──────────────────────
     async def get_profile(self) -> ProfileInfo:

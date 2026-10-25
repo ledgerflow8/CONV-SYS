@@ -57,7 +57,7 @@ Under **Advanced → Scaling** (or the **Scaling** tab after creation):
 Under **Advanced → Disks → Add Disk**:
 - **Name:** `tgpanel-data`
 - **Mount Path:** `/var/data`
-- **Size:** `1 GB` (sessions and SQLite are tiny; grow later if needed).
+- **Size:** `5 GB` (1 GB filled up on 2026-10-25; Status → Data disk shows usage and warns at 80 %).
 
 This disk is where `panel.db`, `panel.lock` and avatars live, via `DATA_DIR` in the next step.
 
@@ -108,6 +108,12 @@ same command; no redeploy needed.)
 ## Updates
 Push to the `telegram-panel` branch → Render auto-deploys (stop-old-then-start-new, so the lock never clashes).
 Or **Manual Deploy → Deploy latest commit** in the dashboard. Env-var or settings changes also trigger a redeploy.
+
+## Disk checks
+- What fills the disk (read-only, in the **Shell** tab): `python -m panel disk`
+- Recover convos that failed to save (e.g. after the disk filled): Status → **Recover missed convos**, or in the
+  Shell `python -m panel recover --since 2026-10-25T15:30:00Z` (dry run), then add `--apply`. It asks the running
+  panel to do the work over its own Telegram connections.
 
 ## Backups
 **Settings → Disks → tgpanel-data** offers scheduled disk snapshots — enable them. A snapshot holds the
