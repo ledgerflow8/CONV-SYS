@@ -160,6 +160,77 @@ async def test_compact_and_checkpoint(db, tmp_path, monkeypatch):
         await housekeeping.compact(engine, tmp_path / "data")
 
 
+async def test_checkpoint_completes_and_truncates_the_wal(db, tmp_path):
+    engine, sm = db
+    async with sm() as s:
+        acc = await _account(s)
+        for i in range(500):
+            s.add(_msg(acc.id, "p", i, utcnow(), text="x" * 500))
+        await s.commit()
+    assert (tmp_path / "data" / "panel.db-wal").stat().st_size > 0
+    cp = await housekeeping.checkpoint(engine)
+    assert cp.complete and not cp.busy and cp.wal_bytes == 0
+
+
+async def test_checkpoint_reports_a_reader_that_blocks_it(tmp_path):
+    from sqlalchemy import event
+
+    path = tmp_path / "busy" / "panel.db"
+    engine = make_engine(path)
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _short_wait(conn, _rec):  # runs after make_engine's pragmas: don't wait 5 s in a test
+        conn.cursor().execute("PRAGMA busy_timeout=200")
+
+    await init_db(engine)
+    sm = make_sessionmaker(engine)
+    async with sm() as s:
+        acc = await _account(s)
+        s.add(_msg(acc.id, "p", 1, utcnow()))
+        await s.commit()
+    reader = sqlite3.connect(path)  # a read left open on the WAL, the way a stuck query would
+    reader.execute("BEGIN")
+    reader.execute("SELECT count(*) FROM messages").fetchone()
+    try:
+        cp = await housekeeping.checkpoint(engine)
+        assert cp.busy and not cp.complete and cp.wal_bytes > 0
+    finally:
+        reader.rollback()
+        reader.close()
+    assert (await housekeeping.checkpoint(engine)).complete
+    await engine.dispose()
+
+
+async def test_failed_checkpoints_are_logged_and_escalate(db, tmp_path, monkeypatch):
+    engine, sm = db
+    hk = housekeeping.Housekeeper(engine, sm, tmp_path / "data")
+    stuck = housekeeping.CheckpointResult(complete=False, busy=True, wal_frames=900, checkpointed=0, wal_bytes=300 * 1024 * 1024)
+
+    async def fake(_engine):
+        return stuck
+
+    monkeypatch.setattr(housekeeping, "checkpoint", fake)
+    for _ in range(3):
+        await hk.run_once()
+    async with sm() as s:
+        acts = (await s.scalars(select(Activity).where(Activity.kind == "wal_checkpoint").order_by(Activity.id))).all()
+    assert [a.level for a in acts] == ["warn", "warn", "error"]  # error from the 3rd hour in a row
+    assert "the database was busy" in acts[0].message and "300.0 MB" in acts[0].message and "3 hourly attempts" in acts[2].message
+    assert hk.checkpoint_failures == 3
+
+    # A WAL over the cap counts as a failure even if the checkpoint itself finished.
+    stuck = housekeeping.CheckpointResult(complete=True, busy=False, wal_frames=0, checkpointed=0, wal_bytes=housekeeping.WAL_WARN_BYTES + 1)
+    await hk.run_once()
+    assert hk.checkpoint_failures == 4
+
+    # One good checkpoint clears the streak and logs nothing.
+    stuck = housekeeping.CheckpointResult(complete=True, busy=False, wal_frames=0, checkpointed=0, wal_bytes=0)
+    await hk.run_once()
+    assert hk.checkpoint_failures == 0
+    async with sm() as s:
+        assert len((await s.scalars(select(Activity).where(Activity.kind == "wal_checkpoint"))).all()) == 4
+
+
 # ── recovery ─────────────────────────────────────────────────────────────────
 
 
@@ -291,7 +362,7 @@ def test_status_shows_disk_usage(client):
     disk = client.get("/api/system/status").json()["disk"]
     assert disk["level"] in ("ok", "warn", "critical")
     assert set(disk["breakdown"]) == {"database", "database_wal", "ai_media", "avatars"}
-    assert set(disk["housekeeping"]) == {"last_run_at", "last_result", "last_error"}
+    assert set(disk["housekeeping"]) == {"last_run_at", "last_result", "last_error", "last_checkpoint"}
 
 
 def test_cli_disk_report(tmp_path, monkeypatch, capsys):

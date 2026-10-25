@@ -81,6 +81,11 @@ def _disk(request: Request) -> dict:
         "last_run_at": hk.last_run_at.isoformat() if hk and hk.last_run_at else None,
         "last_result": vars(hk.last_result) if hk and hk.last_result else None,
         "last_error": hk.last_error if hk else None,
+        "last_checkpoint": (
+            {"complete": hk.last_checkpoint.complete, "wal_bytes": hk.last_checkpoint.wal_bytes, "failures_in_a_row": hk.checkpoint_failures}
+            if hk and hk.last_checkpoint
+            else None
+        ),
     }
     return out
 

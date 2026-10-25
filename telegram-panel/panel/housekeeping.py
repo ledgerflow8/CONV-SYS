@@ -39,6 +39,9 @@ MEDIA_MAX_AGE_SEC = 30 * 60  # nothing in ai_media is in use for longer than one
 AVATAR_MAX_BYTES = 2 * 1024 * 1024
 BATCH = 5000
 
+WAL_WARN_BYTES = 64 * 1024 * 1024  # = journal_size_limit: after a good checkpoint the WAL is far smaller
+CHECKPOINT_ERROR_AFTER = 3  # failed hourly checkpoints in a row before the warning becomes an error
+
 DISK_WARN_PCT = 80
 DISK_CRITICAL_PCT = 90
 
@@ -186,10 +189,27 @@ async def prune_rows(session: AsyncSession) -> tuple[int, int, int]:
     return outbox or 0, activity or 0, imports or 0
 
 
-async def checkpoint(engine: AsyncEngine) -> None:
-    """Fold the WAL into the database and truncate it (journal_size_limit caps what's left)."""
+@dataclass
+class CheckpointResult:
+    complete: bool  # every WAL frame folded into the database and the log reset to empty
+    busy: bool  # a reader or writer kept it from finishing (within busy_timeout)
+    wal_frames: int  # frames in the WAL when it ran
+    checkpointed: int  # frames it managed to fold in
+    wal_bytes: int  # WAL file size afterwards
+
+
+async def checkpoint(engine: AsyncEngine) -> CheckpointResult:
+    """Fold the WAL into the database and truncate it (journal_size_limit caps what's left).
+
+    TRUNCATE waits (busy_timeout) for readers on the WAL to finish and holds new writers meanwhile, so
+    it completes under constant traffic, unless a read stays open longer than that. Before 2026-10-25
+    nothing ran it: SQLite's passive auto-checkpoint never found a quiet moment, and the WAL grew for
+    days until the 1 GB disk filled. The result says whether it worked."""
     async with engine.connect() as conn:
-        await conn.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)")
+        busy, frames, done = (await conn.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)")).one()
+    db = Path(engine.url.database or "")
+    wal_bytes = _size(db.with_name(db.name + "-wal")) if engine.url.database else 0
+    return CheckpointResult(complete=busy == 0 and frames == done, busy=bool(busy), wal_frames=frames, checkpointed=done, wal_bytes=wal_bytes)
 
 
 async def compact(engine: AsyncEngine, data_dir: Path) -> dict:
@@ -225,6 +245,8 @@ class Housekeeper:
         self.last_run_at = None
         self.last_result: PruneResult | None = None
         self.last_error: str | None = None
+        self.last_checkpoint: CheckpointResult | None = None
+        self.checkpoint_failures = 0  # in a row
 
     async def run(self) -> None:
         # Nothing is in flight at startup, so every leftover media file can go.
@@ -258,8 +280,30 @@ class Housekeeper:
                     )
                 )
             await session.commit()
-        await checkpoint(self.engine)
+        await self._checkpoint()
         self.last_run_at, self.last_result, self.last_error = utcnow(), r, None
         if r.total():
             log.info("housekeeping: %s", vars(r))
         return r
+
+    async def _checkpoint(self) -> CheckpointResult:
+        """Hourly checkpoint; a failed one (or a WAL still over the cap) goes to the activity log."""
+        cp = await checkpoint(self.engine)
+        self.last_checkpoint = cp
+        if cp.complete and cp.wal_bytes <= WAL_WARN_BYTES:
+            self.checkpoint_failures = 0
+            return cp
+        self.checkpoint_failures += 1
+        mb = cp.wal_bytes / (1024 * 1024)
+        why = "the database was busy" if cp.busy else f"only {cp.checkpointed} of {cp.wal_frames} pages were folded in"
+        level = "error" if self.checkpoint_failures >= CHECKPOINT_ERROR_AFTER else "warn"
+        msg = (
+            f"Database log (WAL) couldn't be folded into the database: {why}. It's {mb:,.1f} MB"
+            f" ({self.checkpoint_failures} hourly attempt{'s' if self.checkpoint_failures > 1 else ''} in a row)."
+            " If this keeps happening it grows until the disk fills; check Status → Data disk."
+        )
+        log.warning(msg)
+        async with self.sessionmaker() as session:
+            session.add(Activity(level=level, kind="wal_checkpoint", message=msg))
+            await session.commit()
+        return cp

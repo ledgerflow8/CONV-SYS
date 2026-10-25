@@ -80,6 +80,14 @@ function DiskCard({ disk, onCompacted }) {
         each chat&apos;s latest 50), delivered portal events after 7 days, activity after 30 days, leftover media.
         {disk.housekeeping.last_error && <span className="text-destructive"> Last cleanup failed: {disk.housekeeping.last_error}</span>}
       </p>
+      {disk.housekeeping.last_checkpoint?.failures_in_a_row > 0 && (
+        <p className="flex gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+          The database log couldn&apos;t be folded in ({disk.housekeeping.last_checkpoint.failures_in_a_row} hourly attempt
+          {disk.housekeeping.last_checkpoint.failures_in_a_row > 1 ? "s" : ""} in a row, now {mb(disk.housekeeping.last_checkpoint.wal_bytes)}). If it
+          keeps growing, the disk fills again. See Recent activity.
+        </p>
+      )}
       {state.confirm ? (
         <div className="space-y-2 rounded-lg border p-3 text-sm">
           <p>Compacting rewrites the database to give freed space back to the disk. New messages wait while it runs (seconds to a minute). Do it at a quiet time.</p>
