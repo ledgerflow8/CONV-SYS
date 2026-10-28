@@ -15,7 +15,7 @@ Out of scope for v1: openers (starting chats), group chats, a manual chat UI (th
 ## 2. Architecture
 
 ```
- phone browser ──HTTPS──► Render (TLS, panel.fansflow.eu) ──► uvicorn :$PORT (1 instance, 1 worker)
+ phone browser ──HTTPS──► Render (TLS, panel.fansflow.site) ──► uvicorn :$PORT (1 instance, 1 worker)
                                            │
                                            ├─ FastAPI: /api/*  + static frontend/dist
                                            ├─ AccountManager: one TelegramClient per powered-on account
@@ -274,10 +274,10 @@ PANEL_ENC_KEY=            # Fernet key: python -m panel gen-key
 PANEL_SECRET=             # cookie signing
 TG_API_ID= TG_API_HASH=   # panel's own app (my.telegram.org), for phone login / sessions without json
 CAPITAL_LICENSE_KEY=
-PORTAL_INGEST_URL=https://fansflow.eu/api/ingest/convo
+PORTAL_INGEST_URL=https://www.fansflow.site/api/ingest/convo
 PORTAL_INGEST_API_KEY= PORTAL_INGEST_HMAC_SECRET=
 DATA_DIR=/var/data            # the Render persistent disk mount
-PUBLIC_ORIGIN=https://panel.fansflow.eu
+PUBLIC_ORIGIN=https://panel.fansflow.site
 ```
 
 ## 8. Deploy (Render)
@@ -286,7 +286,7 @@ Full click-by-click steps are in `DEPLOY.md`. In short:
 
 - **One Web Service, Starter plan**, built from this repo with Root Directory `telegram-panel`. Build: `pip install -r requirements.txt && npm --prefix frontend ci && npm --prefix frontend run build`. Start: `uvicorn --factory panel.main:create_app --host 0.0.0.0 --port $PORT --workers 1`.
 - **Single instance, enforced.** A persistent disk (mounted at `/var/data`, `DATA_DIR=/var/data`) holds the sessions, SQLite and lock file. Render attaches a disk to only one instance and deploys stop-the-old-before-starting-the-new, so the one-connection-per-account rule and the `fcntl` lock hold. Manual scaling, 1 instance, no autoscaling.
-- **HTTPS + domain:** Render terminates TLS for `panel.fansflow.eu` (CNAME to the service). No reverse proxy of our own.
+- **HTTPS + domain:** Render terminates TLS for `panel.fansflow.site` (CNAME to the service). No reverse proxy of our own.
 - **Secrets** are the service's environment variables; the panel password is set once via the Render Shell (`python -m panel set-password`).
 - **Updates:** push to the branch → Render redeploys. **Backups:** enable the disk's scheduled snapshots; `PANEL_ENC_KEY` is kept outside them.
 
@@ -329,7 +329,7 @@ All settled on 2026-10-14. Nothing is waiting on the client or Capitalbot. ✅ m
 7. **Proxies:** connect direct from Render's IP. A proxy in an uploaded `.json` is stored encrypted but not used. Imports test sessions one at a time with a 2s gap, to avoid a burst of logins from one IP.
 8. **Account count:** built for up to about 200 accounts in one process.
 9. ✅ **Sole connection:** the panel is the only Telegram connection. Capitalbot is used through its API only, never through its own Telegram connector.
-10. **Panel domain:** `panel.fansflow.eu`.
+10. **Panel domain:** `panel.fansflow.site` (moved from `panel.fansflow.eu` on 2026-10-28; the portal is `https://www.fansflow.site`, the bare `fansflow.site` 308-redirects to www).
 11. **Unreadable newer-layer updates (settled 2026-10-21):** Telegram periodically sends updates from an API layer newer than our Telethon (1.45.0 is the newest on PyPI; the GitHub `v1` mirror is behind, so there's no version to bump to). A single such update is already skipped by Telethon's receive loop, but one inside a `getDifference` response makes Telethon tear the connection down (`TypeNotFoundError`). We classify that as a **transient** drop and auto-reconnect with backoff (5s→5min, jittered): a fresh `StringSession` connection re-baselines on `getState` and skips the unreadable backlog, so the account comes back on its own — no manual toggling. Banned/revoked (powered off) and **frozen** (left as-is) are not retried. The card shows "Reconnecting to Telegram…", never the raw exception. This realises the step-5 "reconnect backoff" (§4.5), event-driven rather than via the 60s loop.
 13. **Profile photo is a true replace + converted leads (settled 2026-10-21):** "Change photo" wipes the whole Telegram photo history first (`GetUserPhotos`→`DeletePhotos`), then uploads, then verifies exactly 1 photo remains (Remove verifies 0) — otherwise old photos reappear in the carousel. Every fan Capitalbot marks `converted` is recorded once in a new `leads` table (created by `create_all`; model/preset snapshotted, assigned-VA left blank because the portal owns attribution and never sends it back), backfilled on startup from already-converted chats. A **Leads** screen lists them with account/date/model filters and search and a CSV export (formula-injection-safe); the conversion count shows in Stats per account and overall.
 12. **Tier from Capitalbot when the phone is hidden (settled 2026-10-21):** Telegram almost never exposes a fan's phone, so prefix-based country (libphonenumber, incl. +1 US/CA) covers only the few who share it. For the rest we use Capitalbot's verdict as the tier signal: a **normal reply** reports the convo as Tier 1 (`tier: "T1"` → portal `countrySource=CAPITALBOT`, country `"T1"`, shown as "Tier 1 (AI verified)"); a **`tierFiltered`** verdict reports `tier: "NON_T1"` → the portal rejects it `non_tier1` straight away, even though no reply was sent (it rides its own convo event, since the first/reply events can't carry it). Other filters (gender/ignored/…) are **not** tier calls and send no verdict. The verdict is derived from stored AI state (`ai_state` / `ai_state_reason` / `capital_conversation_id`) — no new column. A visible phone always wins over the AI verdict. Reporting is reinforced so a replied convo never stays Pending: an outbound seen before any inbound backfills the real start from history (never from cold outreach).

@@ -46,11 +46,27 @@ From your own terminal (the password is printed once, only to you):
 DATABASE_URL="<direct url>" npx tsx scripts/create-director.ts <username>
 ```
 
+## Domains (since 2026-10-28)
+
+- Portal: **`https://www.fansflow.site`**, the canonical address. `fansflow.site` 308-redirects to it (Vercel → Domains).
+  Panel: `https://panel.fansflow.site` (Render). The old `fansflow.eu` addresses are retired.
+- Everything the portal links to itself (tracking links `/v/<slug>`, the bot's "Log in at", account-change messages)
+  comes from **`APP_URL`**, so a domain change is: set `APP_URL` in Vercel → redeploy → re-register the webhook.
+  Always the **www** address: Telegram (webhook), cron-job.org and the panel don't follow the bare domain's redirect.
+- Tracking links already shared on an old domain only keep working while that domain still points at Vercel and
+  redirects to the new one (Vercel → Domains → add it → "Redirect to" `www.fansflow.site`).
+- After a change: the bot webhook (§5), cron-job.org's URL (§6), and the panel's `PORTAL_INGEST_URL`
+  (`https://www.fansflow.site/api/ingest/convo`).
+
 ## 5. Telegram webhook
 
 ```bash
 TELEGRAM_BOT_TOKEN=... TELEGRAM_WEBHOOK_SECRET=<same as Vercel> APP_URL=https://<your-domain> npx tsx scripts/set-telegram-webhook.ts
 ```
+
+With the token and secret in `.env`: `APP_URL=https://www.fansflow.site npm run bot:webhook` (a value on the command line
+overrides `.env`). It refuses an address that redirects, then prints what Telegram has registered.
+`npm run bot:webhook -- --info` only shows the current registration.
 
 ## 6. CapitalAI sync (cron-job.org)
 

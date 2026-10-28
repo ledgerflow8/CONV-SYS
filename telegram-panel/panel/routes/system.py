@@ -44,7 +44,10 @@ async def status(request: Request) -> dict:
                 select(OutboxItem).where(OutboxItem.status == "failed").order_by(OutboxItem.id.desc()).limit(50)
             )
         ).all()
-    configured = request.app.state.outbox.config.configured
+    config = request.app.state.outbox.config
+    configured = config.configured
+    if config.problem:
+        last_error = f"{config.problem}. Events are queued, not lost."
     ai = request.app.state.ai
     capital = request.app.state.capital
     async with service.sessionmaker() as session:

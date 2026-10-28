@@ -35,10 +35,12 @@ def test_iso_is_utc_z_to_the_second():
 
 
 def test_status_url_derives_from_convo_url():
-    cfg = PortalConfig("https://fansflow.eu/api/ingest/convo", "k", "s")
-    assert cfg.status_url == "https://fansflow.eu/api/ingest/account-status"
-    assert cfg.url_for("convo") == "https://fansflow.eu/api/ingest/convo"
-    assert cfg.url_for("account_status") == "https://fansflow.eu/api/ingest/account-status"
+    cfg = PortalConfig("https://www.fansflow.site/api/ingest/convo", "k", "s")
+    assert cfg.status_url == "https://www.fansflow.site/api/ingest/account-status"
+    assert cfg.url_for("convo") == "https://www.fansflow.site/api/ingest/convo"
+    assert cfg.url_for("account_status") == "https://www.fansflow.site/api/ingest/account-status"
+    assert cfg.configured
+    assert not PortalConfig(None, "k", "s").configured  # no address set: the outbox stays idle
 
 
 # ── The outbox worker ───────────────────────────────────────────────────────
@@ -151,3 +153,55 @@ async def test_worker_sends_one_kind_per_tick(sm):
     assert "firstMsgAt" in kinds[0]
     assert kinds[1]["status"] == "banned"
     await w._client.aclose()
+
+
+async def test_a_redirecting_portal_url_is_reported_not_followed(sm):
+    """2026-10-28: the portal moved to www.fansflow.site and the bare domain 308-redirects there."""
+    from sqlalchemy import select as _select
+
+    from panel.models import Setting
+
+    calls = []
+
+    def handler(req: httpx.Request):
+        calls.append(str(req.url))
+        return httpx.Response(308, headers={"location": "https://www.fansflow.site/api/ingest/convo"})
+
+    await _add(sm, "convo", {"tgAccount": "a", "peerId": "1", "firstMsgAt": "2026-10-07T10:00:00Z"})
+    w = _worker(sm, handler)
+    await w.tick()
+    assert len(calls) == 1  # not followed: a signed POST only goes where it's configured to
+    row = (await _rows(sm))[0]
+    assert row.status == "pending" and row.last_error == "portal redirected to https://www.fansflow.site/api/ingest/convo"
+    async with sm() as s:
+        err = (await s.scalar(_select(Setting).where(Setting.key == "portal_last_error"))).value
+    assert "PORTAL_INGEST_URL redirects (308) to https://www.fansflow.site/api/ingest/convo" in err
+    await w._client.aclose()
+
+
+def test_portal_ingest_url_is_tidied_and_problems_are_explained(tmp_path):
+    from tests.conftest import make_settings
+
+    assert make_settings(tmp_path).portal_ingest_url is None  # no built-in default domain
+    ok = make_settings(tmp_path, portal_ingest_url=" https://www.fansflow.site/api/ingest/convo/ ")
+    assert ok.portal_ingest_url == "https://www.fansflow.site/api/ingest/convo"
+    assert PortalConfig(ok.portal_ingest_url, "k", "s").problem is None
+    # A wrong address never stops the panel; it keeps the outbox idle with a reason.
+    for bad, why in (
+        (None, "isn't set"),
+        ("http://www.fansflow.site/api/ingest/convo", "must start with https://"),
+        ("https://www.fansflow.site", "must end with /api/ingest/convo"),
+    ):
+        cfg = PortalConfig(bad, "k", "s")
+        assert not cfg.configured and why in cfg.problem
+
+
+def test_status_says_why_the_outbox_is_idle(client):
+    # conftest's panel has no PORTAL_INGEST_* set
+    from tests.conftest import login, set_password
+
+    set_password(client)
+    login(client)
+    p = client.get("/api/system/status").json()["portal"]
+    assert p["configured"] is False
+    assert "PORTAL_INGEST_URL isn't set" in p["last_error"] and "queued, not lost" in p["last_error"]

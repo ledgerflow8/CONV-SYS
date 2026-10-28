@@ -32,7 +32,7 @@ In the Render dashboard:
    repo, then pick it.
 3. On the configuration screen set:
    - **Name:** `tgpanel` (this becomes `tgpanel.onrender.com`).
-   - **Region:** `Frankfurt (EU Central)` (close to the client / `fansflow.eu`).
+   - **Region:** `Frankfurt (EU Central)` (close to the client).
    - **Branch:** `telegram-panel`.
    - **Root Directory:** `telegram-panel`  ← important: build/start run inside this subfolder.
    - **Runtime / Language:** `Python 3`.
@@ -70,10 +70,10 @@ hashes and secrets as **secret** (click the eye/lock) so they're hidden in the d
 | `PANEL_ENC_KEY` | (from step 0) | secret; decrypts sessions/2FA/proxies. Comma-separate to rotate. |
 | `PANEL_SECRET` | (from step 0) | secret; signs the login cookie. |
 | `DATA_DIR` | `/var/data` | must equal the disk mount path. |
-| `PUBLIC_ORIGIN` | `https://panel.fansflow.eu` | `https://` turns on Secure cookies. |
+| `PUBLIC_ORIGIN` | `https://panel.fansflow.site` | `https://` turns on Secure cookies. |
 | `TG_API_ID` | *(my.telegram.org)* | for phone login and sessions with no `.json`. |
 | `TG_API_HASH` | *(my.telegram.org)* | secret. |
-| `PORTAL_INGEST_URL` | `https://fansflow.eu/api/ingest/convo` | |
+| `PORTAL_INGEST_URL` | `https://www.fansflow.site/api/ingest/convo` | the **www** address: the bare domain redirects, and the panel never follows a redirect (Status shows it instead). No default: unset → nothing is sent. |
 | `PORTAL_INGEST_API_KEY` | *(portal's `INGEST_API_KEY`)* | secret; used from step 2. |
 | `PORTAL_INGEST_HMAC_SECRET` | *(portal's `INGEST_HMAC_SECRET`)* | secret; used from step 2. |
 | `CAPITAL_LICENSE_KEY` | *(Capitalbot)* | secret; used from step 3. |
@@ -95,15 +95,15 @@ python -m panel set-password
 It writes to `panel.db` on the mounted disk and signs out any existing login. (To change it later, run the
 same command; no redeploy needed.)
 
-## 7. Custom domain `panel.fansflow.eu`
-1. **Settings → Custom Domains → Add Custom Domain** → enter `panel.fansflow.eu` → **Save**. Render shows a
+## 7. Custom domain `panel.fansflow.site`
+1. **Settings → Custom Domains → Add Custom Domain** → enter `panel.fansflow.site` → **Save**. Render shows a
    **CNAME target** like `tgpanel.onrender.com`.
-2. At the DNS provider for `fansflow.eu`, add:
+2. At the DNS provider for `fansflow.site`, add:
    - Type `CNAME`, Host/Name `panel`, Value `tgpanel.onrender.com` (the exact target Render showed), TTL auto.
-   - `fansflow.eu` itself stays on its current host (the portal); this only adds the `panel` subdomain.
+   - `fansflow.site` / `www.fansflow.site` stay on Vercel (the portal); this only adds the `panel` subdomain.
 3. Back in Render, click **Verify**. Render issues the TLS certificate automatically once DNS resolves
    (usually minutes).
-4. Check: open `https://panel.fansflow.eu/healthz`, then log in from a phone.
+4. Check: open `https://panel.fansflow.site/healthz`, then log in from a phone.
 
 ## Updates
 Push to the `telegram-panel` branch → Render auto-deploys (stop-old-then-start-new, so the lock never clashes).

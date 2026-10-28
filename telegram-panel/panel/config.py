@@ -18,11 +18,21 @@ class Settings(BaseSettings):
     tg_api_id: int | None = None
     tg_api_hash: str | None = None
 
-    portal_ingest_url: str = "https://fansflow.eu/api/ingest/convo"
+    # No default: the portal's address is deployment config (it moved domains once). Unset → outbox idle.
+    portal_ingest_url: str | None = None
     portal_ingest_api_key: str | None = None
     portal_ingest_hmac_secret: str | None = None
 
     capital_license_key: str | None = None
+
+    @field_validator("portal_ingest_url", mode="before")
+    @classmethod
+    def _ingest_url(cls, v: object) -> object:
+        # Only tidied here. A wrong address must never stop the panel (that would take every account
+        # offline): PortalConfig.problem keeps the outbox idle and Status says what's wrong.
+        if v is None or str(v).strip() == "":
+            return None
+        return str(v).strip().rstrip("/")
 
     @field_validator("tg_api_id", mode="before")
     @classmethod
