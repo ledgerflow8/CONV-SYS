@@ -66,7 +66,7 @@ TELEGRAM_BOT_TOKEN=... TELEGRAM_WEBHOOK_SECRET=<same as Vercel> APP_URL=https://
 
 With the token and secret in `.env`: `APP_URL=https://www.fansflow.site npm run bot:webhook` (a value on the command line
 overrides `.env`). It refuses an address that redirects, then prints what Telegram has registered.
-`npm run bot:webhook -- --info` only shows the current registration.
+`npm run bot:webhook -- --info` only shows the current registration. Messages Telegram is still holding (e.g. `/start` presses while the old address was down) are delivered to the new one; add `--drop-pending` to discard them.
 
 ## 6. CapitalAI sync (cron-job.org)
 

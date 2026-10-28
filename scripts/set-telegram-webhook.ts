@@ -2,6 +2,8 @@
 // Needs TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET and a public https APP_URL (read from .env;
 // a value on the command line wins, e.g. APP_URL=https://www.fansflow.site npm run bot:webhook).
 // --info only shows what Telegram has registered now (changes nothing): npm run bot:webhook -- --info
+// Updates Telegram is still holding (it keeps undelivered ones ~24 h, e.g. /start presses while the old
+// address was down) are delivered to the new address. --drop-pending discards them instead.
 
 type WebhookInfo = { url: string; pending_update_count: number; last_error_date?: number; last_error_message?: string };
 
@@ -49,7 +51,7 @@ async function main() {
     url: `${app}/api/telegram/webhook`,
     secret_token: secret,
     allowed_updates: ["message"],
-    drop_pending_updates: true,
+    drop_pending_updates: process.argv.includes("--drop-pending"),
   });
   console.log(`Webhook set to ${app}/api/telegram/webhook`);
   show(await telegram<WebhookInfo>(token, "getWebhookInfo"));
