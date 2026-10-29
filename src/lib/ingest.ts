@@ -347,6 +347,62 @@ export async function reviewConvo(
   }
 }
 
+export type PendingApproval = {
+  approved: number;
+  late: number; // of those, paid in a later week because their own week was already locked
+  skipped: { convoId: string; reason: string }[];
+};
+
+export const MAX_PENDING_APPROVAL = 500;
+
+/**
+ * Director override for PENDING convos that never got a reply because of an outage on our side (e.g. the
+ * panel's full disk on 2026-10-25, when the AI couldn't answer): counts them as qualified anyway.
+ * The other rules still hold: the convo must still be PENDING, a VA must have held the account, and a
+ * known country must be Tier 1 (an unknown one becomes MANUAL, as in review). Paid in its own week if
+ * that's still open, else in the current open week (audited as late), at today's rates. One
+ * transaction per convo, so one bad row never blocks the rest; re-running skips what's done.
+ */
+export async function approvePendingConvos(actor: CurrentUser, convoIds: string[]): Promise<Result<PendingApproval>> {
+  if (actor.role !== "DIRECTOR") return fail("Only the Director can approve convos.");
+  const ids = [...new Set(convoIds)];
+  if (ids.length === 0) return fail("Select at least one convo.");
+  if (ids.length > MAX_PENDING_APPROVAL) return fail(`Approve at most ${MAX_PENDING_APPROVAL} at a time.`);
+  const settings = await getAllSettings();
+  const out: PendingApproval = { approved: 0, late: 0, skipped: [] };
+
+  for (const id of ids) {
+    const result = await db.$transaction(async (tx) => {
+      const convo = await lockConvo(tx, { id });
+      if (!convo || convo.status !== "PENDING") return { skip: "Not pending any more" };
+      if (!convo.vaId) return { skip: "No VA held the account" };
+      if (convo.country && convo.country !== AI_TIER1 && !settings.tier1Countries.includes(convo.country)) {
+        return { skip: `Not Tier 1 (${convo.country})` };
+      }
+      const w = await payWeek(tx, convo.firstMsgAt, settings.timezone);
+      const late = w.late ? { intendedWeekId: w.intended.id, weekId: w.week.id } : undefined;
+      await tx.convo.update({
+        where: { id: convo.id },
+        data: {
+          status: "QUALIFIED",
+          countrySource: convo.country ? convo.countrySource : "MANUAL",
+          weekId: w.week.id,
+          qualifiedAt: new Date(),
+          ...rateSnapshot(settings, convo),
+        },
+      });
+      await auditStatus(tx, convo.id, actor.id, "PENDING", "QUALIFIED", "pending_approved", "review", late);
+      return { late: !!late };
+    });
+    if ("skip" in result) out.skipped.push({ convoId: id, reason: result.skip as string });
+    else {
+      out.approved++;
+      if (result.late) out.late++;
+    }
+  }
+  return { ok: true, data: out };
+}
+
 /** Re-runs ingest for a REVIEW convo with its stored data (e.g. after the account was added to the pool). */
 export async function retryConvo(actor: CurrentUser, convoId: string): Promise<Result<IngestOutcome>> {
   if (actor.role !== "DIRECTOR") return fail("Only the Director can review convos.");

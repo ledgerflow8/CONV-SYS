@@ -83,7 +83,7 @@ model User {
   modelId        String?                    // set on LEAD_VA (team model); VAs inherit
   telegramHandle String?                    // the person's own TG @handle
   telegramUserId BigInt?  @unique           // bound when they /start the bot
-  walletAddress  String?                    // 0x + 40 hex, one per user
+  walletAddress  String?                    // Aptos: 0x + 64 hex (was EVM 0x + 40 until 2026-10-29), one per user
   createdById    String?
   createdAt      DateTime @default(now())
   firedAt        DateTime?
@@ -405,6 +405,10 @@ Gradient background, centred card, logo, username, password, Log In. No signup, 
 
 Payout sending is **manual for launch** (export → send from the agency's wallet → paste tx hashes). No private keys on the server.
 
+**Aptos (2026-10-29).** Payouts moved to the Aptos network (`src/lib/wallet.ts`): addresses are 0x + 64 hex; short forms are left-padded and stored lowercase; a 40-hex EVM address and the reserved 0x0–0xf are refused. An address saved before the move counts as missing (banner, lock snapshot, "Use current wallet", "Mark paid" all check `isAptosAddress`). Director → Payouts → **Clear all wallet addresses** (two-step) wipes every user's wallet and the wallet on unpaid payout lines in one transaction; paid lines keep theirs; the audit (`wallet.clear_all`) keeps every old address. The token is the Settings "Payout currency" label; CSV has `wallet_aptos` + `network` columns.
+
+**Approving pending convos after an outage (2026-10-29).** `approvePendingConvos` (in `ingest.ts`, next to review approval): Director selects PENDING convos on Convos → Pending (date-range filter in org time) and confirms; each becomes QUALIFIED without a reply, at today's rates, in its own week if open, else the current open week (audited `convo.late`). Still required: a VA held the account; a known country is Tier 1 (unknown → MANUAL, as in review). One transaction per convo; re-running skips what's done; a later reply never changes it (final).
+
 ---
 
 ## 8. Build order (2 days)
@@ -425,7 +429,7 @@ Payout sending is **manual for launch** (export → send from the agency's walle
 |---|---|
 | 6 | `ingestConvoEvent` + `/api/ingest/convo` + CSV import + review queue. Vitest for qualification + invariants. |
 | 7 | Stats layer (one query module, all scoped) → all four dashboards wired with live polling. |
-| 8 | Weeks + cron lock + payouts + wallet modal (0x + 40 hex validation) + payout pages + CSV export. |
+| 8 | Weeks + cron lock + payouts + wallet modal (0x + 40 hex validation; Aptos 0x + 64 since 2026-10-29) + payout pages + CSV export. |
 | 9 | VA Resources page + Director resource manager + Supabase Storage uploads. |
 | 10 | Ban/reassign flow + bot notification. Polish to match references. Deploy, set bot webhook, smoke-test every role end to end. |
 

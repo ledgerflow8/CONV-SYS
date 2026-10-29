@@ -7,6 +7,7 @@ import { csvCell } from "@/lib/payouts";
 import { scopeFor } from "@/lib/scope";
 import { getSetting } from "@/lib/settings";
 import { audit } from "@/lib/audit";
+import { WALLET_NETWORK } from "@/lib/wallet";
 
 export const dynamic = "force-dynamic";
 
@@ -28,8 +29,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ weekId:
   ]);
 
   const cur = currency.split(" ")[0].toLowerCase();
-  // amount = commission + leaderboard bonus: the figure to send.
-  const header = ["username", "role", "convos", `commission_${cur}`, `leaderboard_bonus_${cur}`, `amount_${cur}`, "amount_cents", "wallet", "status", "tx_hash"];
+  // amount = commission + leaderboard bonus: the figure to send, on the Aptos network.
+  const net = WALLET_NETWORK.toLowerCase();
+  const header = ["username", "role", "convos", `commission_${cur}`, `leaderboard_bonus_${cur}`, `amount_${cur}`, "amount_cents", `wallet_${net}`, "network", "status", "tx_hash"];
   const rows = payouts.map((p) =>
     [
       p.user.username,
@@ -40,6 +42,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ weekId:
       centsToDollars(p.amountCents),
       p.amountCents,
       p.walletAddress ?? "",
+      WALLET_NETWORK,
       p.status,
       p.txHash ?? "",
     ]

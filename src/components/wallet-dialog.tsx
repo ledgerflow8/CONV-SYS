@@ -15,8 +15,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { setWalletAction } from "@/app/(portal)/wallet-actions";
+import { checkWallet, isAptosAddress, WALLET_NETWORK } from "@/lib/wallet";
 
-const WALLET = /^0x[0-9a-fA-F]{40}$/;
 
 export function WalletDialog({ current, currency, trigger }: { current: string | null; currency: string; trigger?: React.ReactNode }) {
   const [open, setOpen] = useState(false);
@@ -24,14 +24,17 @@ export function WalletDialog({ current, currency, trigger }: { current: string |
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   const v = value.trim();
-  const hint = v === "" ? null : WALLET.test(v) ? null : "Must be 0x followed by 40 hex characters (0–9, a–f).";
+  const checked = v === "" ? null : checkWallet(v);
+  const hint = checked && !checked.ok ? checked.error : null;
+  // An address saved before the move to Aptos isn't kept as a starting value: it can't be saved again.
+  const usable = isAptosAddress(current) ? current : null;
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!WALLET.test(v)) return;
+    if (!checked?.ok) return;
     setError(null);
     startTransition(async () => {
-      const r = await setWalletAction(v);
+      const r = await setWalletAction(checked.address);
       if (!r.ok) return setError(r.error);
       setOpen(false);
     });
@@ -42,7 +45,7 @@ export function WalletDialog({ current, currency, trigger }: { current: string |
       open={open}
       onOpenChange={(o) => {
         setOpen(o);
-        if (o) setValue(current ?? "");
+        if (o) setValue(usable ?? "");
         setError(null);
       }}
     >
@@ -50,25 +53,26 @@ export function WalletDialog({ current, currency, trigger }: { current: string |
         {trigger ?? (
           <Button size="sm" variant={current ? "outline" : "default"}>
             <Wallet className="size-4" />
-            {current ? "Change wallet" : "Add wallet"}
+            {usable ? "Change wallet" : `Add ${WALLET_NETWORK} wallet`}
           </Button>
         )}
       </DialogTrigger>
       <DialogContent>
         <form onSubmit={submit} className="space-y-4">
           <DialogHeader>
-            <DialogTitle>Payout wallet</DialogTitle>
+            <DialogTitle>Payout wallet ({WALLET_NETWORK})</DialogTitle>
             <DialogDescription>
-              Weekly payouts are sent here in {currency}. Double-check it: payments to a wrong address can&apos;t be reversed.
+              Weekly payouts are sent here in {currency} on the {WALLET_NETWORK} network. Paste the address from your {WALLET_NETWORK}{" "}
+              wallet and double-check it: payments to a wrong address can&apos;t be reversed.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            <Label htmlFor="wallet">Wallet address</Label>
+            <Label htmlFor="wallet">{WALLET_NETWORK} wallet address</Label>
             <Input
               id="wallet"
               value={value}
               onChange={(e) => setValue(e.target.value)}
-              placeholder="0x…"
+              placeholder="0x… (64 characters)"
               autoCapitalize="none"
               autoComplete="off"
               spellCheck={false}
@@ -77,7 +81,10 @@ export function WalletDialog({ current, currency, trigger }: { current: string |
               aria-describedby="wallet-hint"
             />
             <p id="wallet-hint" className={hint ? "text-sm text-destructive" : "text-xs text-muted-foreground"}>
-              {hint ?? "Changes apply to weeks that haven't been locked yet."}
+              {hint ??
+                (checked?.ok && checked.address !== v.toLowerCase()
+                  ? `Saved as ${checked.address} (the full 64-character form).`
+                  : "Changes apply to weeks that haven't been locked yet.")}
             </p>
           </div>
           {error && (
@@ -86,7 +93,7 @@ export function WalletDialog({ current, currency, trigger }: { current: string |
             </p>
           )}
           <DialogFooter>
-            <Button type="submit" disabled={!WALLET.test(v) || v === current || pending}>
+            <Button type="submit" disabled={!checked?.ok || checked.address === usable || pending}>
               {pending ? "Saving…" : "Save wallet"}
             </Button>
           </DialogFooter>

@@ -1,5 +1,6 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { WalletDialog } from "@/components/wallet-dialog";
+import { isAptosAddress, WALLET_NETWORK } from "@/lib/wallet";
 import { cn } from "@/lib/utils";
 
 export function StatCard({
@@ -32,12 +33,15 @@ export function StatCard({
   );
 }
 
-export function WalletBanner({ currency }: { currency: string }) {
+/** Shown while the user has no usable payout wallet: none at all, or one saved before the move to Aptos. */
+export function WalletBanner({ wallet, currency }: { wallet: string | null; currency: string }) {
+  if (isAptosAddress(wallet)) return null;
   return (
     <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-red-300 bg-red-50 p-3 text-sm text-red-900 dark:border-red-800 dark:bg-red-950 dark:text-red-100">
       <p>
         <span aria-hidden>⚠️ </span>
-        <strong>Payout address missing.</strong> Add your wallet so you can get paid.
+        <strong>Payout address missing.</strong>{" "}
+        {wallet ? `Payouts are on ${WALLET_NETWORK} now: add your ${WALLET_NETWORK} address so you can get paid.` : `Add your ${WALLET_NETWORK} wallet so you can get paid.`}
       </p>
       <WalletDialog current={null} currency={currency} />
     </div>

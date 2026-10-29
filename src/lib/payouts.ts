@@ -7,7 +7,7 @@ import { fail, type Result } from "@/lib/action-result";
 import type { CurrentUser } from "@/lib/auth/session";
 import { prizeRules, settleBoards } from "@/lib/leaderboard";
 import { getSetting } from "@/lib/settings";
-import { normalizeTxHash, normalizeWallet } from "@/lib/wallet";
+import { checkWallet, isAptosAddress, normalizeTxHash } from "@/lib/wallet";
 import { weekBounds } from "@/lib/weeks";
 
 class PayoutError extends Error {}
@@ -16,8 +16,9 @@ class PayoutError extends Error {}
 
 export async function setWallet(actor: CurrentUser, input: string): Promise<Result<{ walletAddress: string }>> {
   if (actor.role === "DIRECTOR") return fail("The Director doesn't receive payouts.");
-  const wallet = normalizeWallet(input);
-  if (!wallet) return fail("Enter a wallet address: 0x followed by 40 hex characters.");
+  const checked = checkWallet(input);
+  if (!checked.ok) return fail(checked.error);
+  const wallet = checked.address;
 
   await db.$transaction(async (tx) => {
     const before = await tx.user.findUniqueOrThrow({ where: { id: actor.id }, select: { walletAddress: true } });
@@ -80,9 +81,10 @@ export async function lockWeek(actorId: string | null, weekId: string, now = new
         }
       }
 
+      // Only Aptos addresses are snapshotted: one saved before the move to Aptos counts as missing.
       const wallets = new Map(
         (await tx.user.findMany({ where: { id: { in: lines.map((l) => l.userId) } }, select: { id: true, walletAddress: true } })).map(
-          (u) => [u.id, u.walletAddress],
+          (u) => [u.id, isAptosAddress(u.walletAddress) ? u.walletAddress : null],
         ),
       );
       await tx.payout.createMany({ data: lines.map((l) => ({ ...l, weekId, walletAddress: wallets.get(l.userId) ?? null })) });
@@ -141,6 +143,7 @@ export async function markPayoutPaid(actor: CurrentUser, payoutId: string, txHas
       if (!p) throw new PayoutError("Payout not found.");
       if (p.status === "SENT") throw new PayoutError("Already marked paid.");
       if (!p.walletAddress) throw new PayoutError("No wallet on this payout. Use their current wallet first.");
+      if (!isAptosAddress(p.walletAddress)) throw new PayoutError("This payout's wallet isn't an Aptos address. Use their current wallet first.");
 
       await tx.payout.update({ where: { id: p.id }, data: { status: "SENT", txHash, paidAt: new Date() } });
       await audit(tx, { actorId: actor.id, action: "payout.paid", target: p.id, meta: { txHash, wallet: p.walletAddress } });
@@ -176,7 +179,7 @@ export async function refreshPayoutWallet(actor: CurrentUser, payoutId: string):
       const p = await tx.payout.findUnique({ where: { id: payoutId }, select: { status: true, walletAddress: true, user: { select: { walletAddress: true } } } });
       if (!p) throw new PayoutError("Payout not found.");
       if (p.status === "SENT") throw new PayoutError("Already paid; the wallet can't change.");
-      if (!p.user.walletAddress) throw new PayoutError("They still haven't set a wallet.");
+      if (!isAptosAddress(p.user.walletAddress)) throw new PayoutError("They still haven't set an Aptos wallet.");
       await tx.payout.update({ where: { id: payoutId }, data: { walletAddress: p.user.walletAddress, status: "PENDING" } });
       await audit(tx, { actorId: actor.id, action: "payout.wallet_refresh", target: payoutId, meta: { before: p.walletAddress, after: p.user.walletAddress } });
       return p.user.walletAddress;
@@ -186,6 +189,34 @@ export async function refreshPayoutWallet(actor: CurrentUser, payoutId: string):
     if (e instanceof PayoutError) return fail(e.message);
     throw e;
   }
+}
+
+/**
+ * Director: wipe every saved wallet so everyone re-adds one (the move to Aptos, 2026-10-29). Also clears the
+ * wallet on unpaid payout lines, which still hold the old address from when their week locked; "Use current
+ * wallet" fills them in again once the person has added a new one. Paid lines keep theirs. One transaction;
+ * the audit keeps every old address.
+ */
+export async function clearAllWallets(actor: CurrentUser): Promise<Result<{ users: number; payouts: number }>> {
+  if (actor.role !== "DIRECTOR") return fail("Only the Director can clear wallets.");
+  const out = await db.$transaction(async (tx) => {
+    const before = await tx.user.findMany({ where: { walletAddress: { not: null } }, select: { id: true, walletAddress: true } });
+    const users = await tx.user.updateMany({ where: { walletAddress: { not: null } }, data: { walletAddress: null } });
+    const unpaid = await tx.payout.findMany({ where: { status: { not: "SENT" }, walletAddress: { not: null } }, select: { id: true, walletAddress: true } });
+    const payouts = await tx.payout.updateMany({ where: { id: { in: unpaid.map((p) => p.id) } }, data: { walletAddress: null } });
+    await audit(tx, {
+      actorId: actor.id,
+      action: "wallet.clear_all",
+      meta: {
+        users: users.count,
+        payouts: payouts.count,
+        before: before.map((u) => ({ userId: u.id, wallet: u.walletAddress })),
+        payoutsBefore: unpaid.map((p) => ({ payoutId: p.id, wallet: p.walletAddress })),
+      },
+    });
+    return { users: users.count, payouts: payouts.count };
+  });
+  return { ok: true, data: out };
 }
 
 // ── Export ────────────────────────────────────────────────────────────────

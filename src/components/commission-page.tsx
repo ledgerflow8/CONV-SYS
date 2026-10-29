@@ -10,6 +10,7 @@ import { formatCents } from "@/lib/money";
 import { getSetting } from "@/lib/settings";
 import { commissionSummary, currentPeriods } from "@/lib/stats";
 import { formatDay, formatPeriod } from "@/lib/time";
+import { isAptosAddress, WALLET_NETWORK } from "@/lib/wallet";
 
 const HOW: Record<"LEAD_VA" | "LEAD_MANAGER", { rateKey: "leadVa" | "lm"; basis: string }> = {
   LEAD_VA: { rateKey: "leadVa", basis: "for every qualified convo from anyone on your team" },
@@ -40,13 +41,13 @@ export async function CommissionPage({ user }: { user: CurrentUser & { role: "LE
 
       <Card className="mb-4">
         <CardHeader>
-          <CardTitle className="text-base">Payout wallet</CardTitle>
+          <CardTitle className="text-base">Payout wallet ({WALLET_NETWORK})</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-wrap items-center justify-between gap-3">
-          {user.walletAddress ? (
+          {isAptosAddress(user.walletAddress) ? (
             <code className="text-xs break-all">{user.walletAddress}</code>
           ) : (
-            <span className="text-sm text-destructive">No wallet yet. Add one so you can get paid.</span>
+            <span className="text-sm text-destructive">No {WALLET_NETWORK} wallet yet. Add one so you can get paid.</span>
           )}
           <WalletDialog current={user.walletAddress} currency={currency} />
         </CardContent>
@@ -85,7 +86,7 @@ export async function CommissionPage({ user }: { user: CurrentUser & { role: "LE
           </p>
           <p className="text-muted-foreground">
             Weeks run Monday to Sunday ({timeZone === "UTC" ? "UTC" : "org time"}). Each week locks on {formatDay(week.endsAt, timeZone)} at
-            00:00 and is paid in {currency} to your wallet.
+            00:00 and is paid in {currency} on {WALLET_NETWORK} to your wallet.
           </p>
         </CardContent>
       </Card>

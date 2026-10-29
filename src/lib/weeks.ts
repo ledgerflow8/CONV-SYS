@@ -36,3 +36,14 @@ export async function weekFor(tx: Prisma.TransactionClient, at: Date, timeZone: 
   const { startsAt, endsAt } = weekBounds(at, timeZone);
   return tx.week.upsert({ where: { startsAt }, update: {}, create: { startsAt, endsAt } });
 }
+
+/** "2026-10-25T18:00" (a datetime-local input) read as wall-clock time in the org timezone → UTC. Null if malformed. */
+export function parseLocalDateTime(value: string | undefined | null, timeZone: string): Date | null {
+  const m = value?.trim().match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
+  if (!m) return null;
+  const [y, mo, d, h, mi] = m.slice(1).map(Number);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59) return null;
+  const wall = Date.UTC(y, mo - 1, d, h, mi);
+  if (new Date(wall).getUTCDate() !== d) return null; // e.g. 31 Nov
+  return new Date(wall - offsetMinutes(timeZone) * 60_000);
+}

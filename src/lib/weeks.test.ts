@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dayBounds, offsetMinutes, WEEK_MS, weekBounds } from "./weeks";
+import { dayBounds, offsetMinutes, parseLocalDateTime, WEEK_MS, weekBounds } from "./weeks";
 
 describe("dayBounds (GMT+2)", () => {
   it("a local day runs 22:00Z → 22:00Z", () => {
@@ -55,6 +55,18 @@ describe("weekBounds (GMT+2)", () => {
       if (prevEnd) expect(iso(b.startsAt)).toBe(iso(prevEnd));
       prevEnd = b.endsAt;
       at = b.endsAt;
+    }
+  });
+});
+
+describe("parseLocalDateTime", () => {
+  it("reads a datetime-local value as org-timezone wall time", () => {
+    // GMT+2: 18:00 local on Sun 25 Oct = 16:00 UTC (the panel outage started ~16:00 UTC)
+    expect(parseLocalDateTime("2026-10-25T18:00", "Etc/GMT-2")?.toISOString()).toBe("2026-10-25T16:00:00.000Z");
+    expect(parseLocalDateTime("2026-10-25T22:40", "Etc/GMT-2")?.toISOString()).toBe("2026-10-25T20:40:00.000Z");
+    expect(parseLocalDateTime("2026-10-25T16:00", "UTC")?.toISOString()).toBe("2026-10-25T16:00:00.000Z");
+    for (const bad of ["", "2026-10-25", "2026-13-01T00:00", "2026-11-31T10:00", "2026-10-25T24:00", undefined, null]) {
+      expect(parseLocalDateTime(bad, "Etc/GMT-2")).toBeNull();
     }
   });
 });

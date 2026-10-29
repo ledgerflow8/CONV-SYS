@@ -8,8 +8,8 @@ import { createModel, renameModel, setModelActive } from "@/lib/models";
 import { createManagedUser, regeneratePassword, setLeadManagerStatus, type Credentials } from "@/lib/people";
 import { addPoolAccount, importPoolAccounts, type ImportSummary } from "@/lib/pool";
 import { importConvosCsv, type ConvoImportSummary } from "@/lib/convo-import";
-import { retryConvo, reviewConvo, type IngestOutcome } from "@/lib/ingest";
-import { lockFinishedWeeks, lockWeek, markPayoutFailed, markPayoutPaid, refreshPayoutWallet, type LockSummary } from "@/lib/payouts";
+import { approvePendingConvos, MAX_PENDING_APPROVAL, retryConvo, reviewConvo, type IngestOutcome, type PendingApproval } from "@/lib/ingest";
+import { clearAllWallets, lockFinishedWeeks, lockWeek, markPayoutFailed, markPayoutPaid, refreshPayoutWallet, type LockSummary } from "@/lib/payouts";
 import { createResource, deleteResource, prepareUpload } from "@/lib/resources";
 import { restoreAccount, takeAccountOutOfService, type TakeOutcome } from "@/lib/reassign";
 import { syncCapitalAI } from "@/lib/capitalai-sync";
@@ -186,6 +186,15 @@ export async function reviewConvoAction(convoId: unknown, decision: unknown): Pr
   return result;
 }
 
+export async function approvePendingConvosAction(convoIds: unknown): Promise<Result<PendingApproval>> {
+  const actor = await requireRole("DIRECTOR");
+  const parsed = z.array(id).min(1).max(MAX_PENDING_APPROVAL).safeParse(convoIds);
+  if (!parsed.success) return fail(`Select between 1 and ${MAX_PENDING_APPROVAL} convos.`);
+  const result = await approvePendingConvos(actor, parsed.data);
+  revalidatePath("/", "layout"); // earnings, leaderboards and payouts pages all count them
+  return result;
+}
+
 export async function retryConvoAction(convoId: unknown): Promise<Result<IngestOutcome>> {
   const actor = await requireRole("DIRECTOR");
   const parsed = id.safeParse(convoId);
@@ -228,6 +237,13 @@ export async function markPayoutFailedAction(payoutId: unknown): Promise<Result<
   if (!parsed.success) return fail("Invalid request.");
   const result = await markPayoutFailed(actor, parsed.data);
   revalidatePath("/director/payouts", "layout");
+  return result;
+}
+
+export async function clearAllWalletsAction(): Promise<Result<{ users: number; payouts: number }>> {
+  const actor = await requireRole("DIRECTOR");
+  const result = await clearAllWallets(actor);
+  revalidatePath("/", "layout"); // every dashboard's missing-wallet banner
   return result;
 }
 

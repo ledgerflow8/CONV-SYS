@@ -13,6 +13,7 @@ import { formatCents } from "@/lib/money";
 import { scopeFor } from "@/lib/scope";
 import { getSetting } from "@/lib/settings";
 import { qualifiedTotals } from "@/lib/stats";
+import { isAptosAddress, WALLET_NETWORK } from "@/lib/wallet";
 import { formatDateTime, formatPeriod } from "@/lib/time";
 import { LockWeekButton, PayoutRowActions } from "../payout-controls";
 
@@ -34,7 +35,7 @@ export default async function WeekPayoutsPage({ params }: { params: Promise<{ we
   const ended = week.endsAt <= new Date();
   const total = payouts.reduce((n, p) => n + p.amountCents, 0);
   const paid = payouts.filter((p) => p.status === "SENT").reduce((n, p) => n + p.amountCents, 0);
-  const missing = payouts.filter((p) => !p.walletAddress).length;
+  const missing = payouts.filter((p) => p.status !== "SENT" && !isAptosAddress(p.walletAddress)).length;
 
   return (
     <>
@@ -77,7 +78,7 @@ export default async function WeekPayoutsPage({ params }: { params: Promise<{ we
           <div className="mb-4 grid grid-cols-3 gap-3">
             <StatCard label={`Total (${currency})`} value={formatCents(total)} />
             <StatCard label="Paid" value={formatCents(paid)} tone={paid === total && total > 0 ? "good" : undefined} />
-            <StatCard label="Missing wallets" value={missing} tone={missing ? "danger" : undefined} />
+            <StatCard label={`Missing ${WALLET_NETWORK} wallets`} value={missing} tone={missing ? "danger" : undefined} />
           </div>
           <Card className="py-0">
             <ul className="divide-y">
@@ -93,12 +94,12 @@ export default async function WeekPayoutsPage({ params }: { params: Promise<{ we
                           {p.user.status !== "ACTIVE" && ` · ${p.user.status.toLowerCase()}`}
                         </span>
                       </p>
-                      {p.walletAddress ? (
+                      {isAptosAddress(p.walletAddress) || (p.status === "SENT" && p.walletAddress) ? (
                         <p className="font-mono text-xs break-all text-muted-foreground">{p.walletAddress}</p>
                       ) : (
                         <p className="flex items-center gap-1 text-xs text-destructive">
-                          <TriangleAlert className="size-3" /> No wallet
-                          {p.user.walletAddress && " (they've added one since: use it below)"}
+                          <TriangleAlert className="size-3" /> {p.walletAddress ? `Not an ${WALLET_NETWORK} address` : `No ${WALLET_NETWORK} wallet`}
+                          {isAptosAddress(p.user.walletAddress) && " (they've added one since: use it below)"}
                         </p>
                       )}
                       {p.txHash && (
@@ -118,8 +119,8 @@ export default async function WeekPayoutsPage({ params }: { params: Promise<{ we
                     <PayoutRowActions
                       payoutId={p.id}
                       status={p.status}
-                      hasWallet={!!p.walletAddress}
-                      canUseCurrentWallet={!!p.user.walletAddress && p.user.walletAddress !== p.walletAddress}
+                      hasWallet={isAptosAddress(p.walletAddress)}
+                      canUseCurrentWallet={isAptosAddress(p.user.walletAddress) && p.user.walletAddress !== p.walletAddress}
                     />
                   )}
                 </li>

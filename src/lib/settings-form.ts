@@ -85,7 +85,7 @@ export function parseSettingsForm(
   if (!TIMEZONES.includes(input.timezone)) errors.timezone = "Pick a timezone from the list.";
 
   const currency = input.payoutCurrency.trim();
-  if (currency.length < 2 || currency.length > 30) errors.payoutCurrency = "2–30 characters, e.g. USDT (TRC-20)";
+  if (currency.length < 2 || currency.length > 30) errors.payoutCurrency = "2–30 characters, e.g. USDT";
 
   const windowMin = Number(input.clickMatchWindowMin);
   if (!Number.isInteger(windowMin) || windowMin < 1 || windowMin > 1440) {

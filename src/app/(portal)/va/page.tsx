@@ -9,6 +9,7 @@ import { requireRole } from "@/lib/auth/session";
 import { db } from "@/lib/db";
 import { liveBoard, prizeRules } from "@/lib/leaderboard";
 import { trackingUrl } from "@/lib/links";
+import { isAptosAddress, WALLET_NETWORK } from "@/lib/wallet";
 import { formatCents } from "@/lib/money";
 import { scopeFor } from "@/lib/scope";
 import { getSetting } from "@/lib/settings";
@@ -47,7 +48,7 @@ export default async function VaDashboard() {
     <>
       <TopBar title="My Accounts" emoji="📱" />
       <LiveRefresh />
-      {!user.walletAddress && <WalletBanner currency={currency} />}
+      <WalletBanner wallet={user.walletAddress} currency={currency} />
 
       <div className="mb-4 grid grid-cols-2 gap-3">
         <StatCard label="This week's earnings" value={formatCents(thisWeek.vaCents)} tone="good" hint={`${thisWeek.convos} × ${formatCents(rates.va)}`} />
@@ -105,10 +106,14 @@ export default async function VaDashboard() {
             <dd>{formatDay(week.endsAt, timeZone)}</dd>
             <dt className="text-muted-foreground">Lead VA</dt>
             <dd>{me.parent ? `@${me.parent.username}` : "—"}</dd>
-            <dt className="text-muted-foreground">Wallet</dt>
-            <dd className="break-all font-mono text-xs">{user.walletAddress ?? <span className="font-sans text-sm text-destructive">Not set</span>}</dd>
+            <dt className="text-muted-foreground">Wallet ({WALLET_NETWORK})</dt>
+            <dd className="break-all font-mono text-xs">
+              {isAptosAddress(user.walletAddress) ? user.walletAddress : <span className="font-sans text-sm text-destructive">Not set</span>}
+            </dd>
             <dt className="text-muted-foreground">Currency</dt>
-            <dd>{currency}</dd>
+            <dd>
+              {currency} on {WALLET_NETWORK}
+            </dd>
           </dl>
           <div className="mt-3">
             <WalletDialog current={user.walletAddress} currency={currency} />

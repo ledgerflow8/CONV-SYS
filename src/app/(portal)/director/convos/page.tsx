@@ -7,13 +7,15 @@ import { requireRole } from "@/lib/auth/session";
 import { db } from "@/lib/db";
 import { scopeFor } from "@/lib/scope";
 import { getSetting } from "@/lib/settings";
-import { formatDateTime } from "@/lib/time";
+import { formatDateTime, formatPeriod, tzLabel } from "@/lib/time";
+import { parseLocalDateTime, weekBounds } from "@/lib/weeks";
 import { cn } from "@/lib/utils";
 import { getSyncState } from "@/lib/capitalai-sync";
-import { ImportConvosDialog, ReviewActions, SyncNowButton } from "./convo-controls";
+import { ImportConvosDialog, PendingApproveList, ReviewActions, SyncNowButton } from "./convo-controls";
 
 const STATUSES: ConvoStatus[] = ["QUALIFIED", "PENDING", "REVIEW", "REJECTED"];
 const LIST_LIMIT = 100;
+const PENDING_LIST_LIMIT = 500; // the Pending tab is where bulk approval happens: show enough to select them all
 
 const REASON_LABEL: Record<string, string> = {
   unknown_country: "Country unknown",
@@ -39,19 +41,24 @@ const convoSelect = {
   va: { select: { username: true } },
 } satisfies Prisma.ConvoSelect;
 
-export default async function ConvosPage({ searchParams }: { searchParams: Promise<{ status?: string; q?: string }> }) {
+export default async function ConvosPage({ searchParams }: { searchParams: Promise<{ status?: string; q?: string; from?: string; to?: string }> }) {
   const user = await requireRole("DIRECTOR");
   const scope = scopeFor(user);
   const sp = await searchParams;
   const status = STATUSES.find((s) => s === sp.status);
   const q = sp.q?.trim().replace(/^@/, "").slice(0, 64);
   const [tz, sync] = await Promise.all([getSetting("timezone"), getSyncState()]);
+  // Date range on the fan's first message, typed in org time (the same clock the list shows).
+  const from = parseLocalDateTime(sp.from, tz);
+  const to = parseLocalDateTime(sp.to, tz);
+  const limit = status === "PENDING" ? PENDING_LIST_LIMIT : LIST_LIMIT;
   const syncConfigured = !!process.env.CAPITALAI_LICENSE_KEY;
 
   const listWhere: Prisma.ConvoWhereInput = {
     AND: [
       scope.convo,
       status ? { status } : {},
+      from || to ? { firstMsgAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {},
       q
         ? {
             OR: [
@@ -67,7 +74,7 @@ export default async function ConvosPage({ searchParams }: { searchParams: Promi
   const [review, reviewCount, list, total, counts] = await Promise.all([
     db.convo.findMany({ where: { AND: [scope.convo, { status: "REVIEW" }] }, orderBy: { firstMsgAt: "asc" }, take: 50, select: convoSelect }),
     db.convo.count({ where: { AND: [scope.convo, { status: "REVIEW" }] } }),
-    db.convo.findMany({ where: listWhere, orderBy: { firstMsgAt: "desc" }, take: LIST_LIMIT, select: convoSelect }),
+    db.convo.findMany({ where: listWhere, orderBy: { firstMsgAt: "desc" }, take: limit, select: convoSelect }),
     db.convo.count({ where: listWhere }),
     db.convo.groupBy({ by: ["status"], where: scope.convo, _count: true }),
   ]);
@@ -76,6 +83,8 @@ export default async function ConvosPage({ searchParams }: { searchParams: Promi
     const p = new URLSearchParams();
     if (s) p.set("status", s);
     if (q) p.set("q", q);
+    if (from && sp.from) p.set("from", sp.from);
+    if (to && sp.to) p.set("to", sp.to);
     return p.size ? `/director/convos?${p}` : "/director/convos";
   };
 
@@ -134,16 +143,34 @@ export default async function ConvosPage({ searchParams }: { searchParams: Promi
       </Card>
 
       <h2 className="mb-2 text-lg font-semibold">All convos</h2>
-      <form className="mb-3 flex gap-2" action="/director/convos">
+      <form className="mb-3 space-y-2" action="/director/convos">
         {status && <input type="hidden" name="status" value={status} />}
-        <input
-          name="q"
-          defaultValue={q}
-          placeholder="Search peer id, account or VA"
-          aria-label="Search convos"
-          className="h-9 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm"
-        />
-        <button className="h-9 rounded-md border bg-background px-3 text-sm font-medium">Search</button>
+        <div className="flex gap-2">
+          <input
+            name="q"
+            defaultValue={q}
+            placeholder="Search peer id, account or VA"
+            aria-label="Search convos"
+            className="h-9 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm"
+          />
+          <button className="h-9 rounded-md border bg-background px-3 text-sm font-medium">Search</button>
+        </div>
+        <div className="flex flex-wrap items-end gap-2 text-sm">
+          <label className="space-y-1">
+            <span className="block text-xs text-muted-foreground">First message from ({tzLabel(tz)})</span>
+            <input type="datetime-local" name="from" defaultValue={from ? sp.from : ""} className="h-9 rounded-md border bg-background px-2" />
+          </label>
+          <label className="space-y-1">
+            <span className="block text-xs text-muted-foreground">to</span>
+            <input type="datetime-local" name="to" defaultValue={to ? sp.to : ""} className="h-9 rounded-md border bg-background px-2" />
+          </label>
+          <button className="h-9 rounded-md border bg-background px-3 font-medium">Apply dates</button>
+          {(from || to) && (
+            <Link href={href(status)} className="h-9 px-1 leading-9 text-muted-foreground underline">
+              Clear dates
+            </Link>
+          )}
+        </div>
       </form>
       <div className="mb-3 flex flex-wrap gap-1.5 text-sm">
         <Chip href={href()} active={!status}>
@@ -157,18 +184,26 @@ export default async function ConvosPage({ searchParams }: { searchParams: Promi
       </div>
       <p className="mb-2 text-sm text-muted-foreground">
         {total} {total === 1 ? "convo" : "convos"}
-        {total > LIST_LIMIT && ` · showing newest ${LIST_LIMIT}`}
+        {total > limit && ` · showing newest ${limit}`}
+        {(from || to) && ` · first message ${from ? `from ${formatDateTime(from, tz)}` : ""}${to ? ` to ${formatDateTime(to, tz)}` : ""}`}
       </p>
-      <Card className="py-0">
-        <ul className="divide-y">
-          {list.length === 0 && <li className="p-4 text-sm text-muted-foreground">No convos match.</li>}
-          {list.map((c) => (
-            <li key={c.id} className="px-4 py-3">
-              <ConvoLine c={c} tz={tz} />
-            </li>
-          ))}
-        </ul>
-      </Card>
+      {status === "PENDING" ? (
+        <PendingApproveList
+          currentWeek={`this week (${formatPeriod(weekBounds(new Date(), tz), tz)})`}
+          rows={list.map((c) => ({ id: c.id, content: <ConvoLine c={c} tz={tz} /> }))}
+        />
+      ) : (
+        <Card className="py-0">
+          <ul className="divide-y">
+            {list.length === 0 && <li className="p-4 text-sm text-muted-foreground">No convos match.</li>}
+            {list.map((c) => (
+              <li key={c.id} className="px-4 py-3">
+                <ConvoLine c={c} tz={tz} />
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
     </>
   );
 }

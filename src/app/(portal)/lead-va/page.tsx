@@ -44,7 +44,7 @@ export default async function LeadVaDashboard() {
     <>
       <TopBar title="Dashboard" emoji="📊" />
       <LiveRefresh />
-      {!user.walletAddress && <WalletBanner currency={currency} />}
+      <WalletBanner wallet={user.walletAddress} currency={currency} />
 
       <div className="mb-4 flex items-center gap-2 text-sm">
         <span className="text-muted-foreground">Team model</span>

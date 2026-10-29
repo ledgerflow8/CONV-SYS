@@ -109,7 +109,7 @@ export function SettingsForm({
             </select>
             {errors.timezone && <p className="text-sm text-destructive">{errors.timezone}</p>}
           </div>
-          {field("payoutCurrency", "Payout currency (label only)", { placeholder: "USDT (TRC-20)" })}
+          {field("payoutCurrency", "Payout currency on Aptos (label only)", { placeholder: "USDT" })}
           {field("supportTelegram", "Support Telegram for “Report a Problem”", { placeholder: "@support_handle" })}
         </CardContent>
       </Card>

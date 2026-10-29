@@ -15,7 +15,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { ConvoImportSummary } from "@/lib/convo-import";
-import { importConvosAction, retryConvoAction, reviewConvoAction, syncCapitalAINowAction } from "../actions";
+import { approvePendingConvosAction, importConvosAction, retryConvoAction, reviewConvoAction, syncCapitalAINowAction } from "../actions";
 
 export function ReviewActions({ convoId, canApprove }: { convoId: string; canApprove: boolean }) {
   const [pending, startTransition] = useTransition();
@@ -180,6 +180,92 @@ export function SyncNowButton() {
         {pending ? "Syncing…" : "Sync now"}
       </Button>
       {msg && <span className={msg.ok ? "text-xs text-muted-foreground" : "text-xs text-destructive"}>{msg.text}</span>}
+    </div>
+  );
+}
+
+/**
+ * Pending list with checkboxes and "Approve selected" (Director override after an outage). Two steps: the
+ * count and what it means, then Confirm. Nothing is approved without that click.
+ */
+export function PendingApproveList({ rows, currentWeek }: { rows: { id: string; content: React.ReactNode }[]; currentWeek: string }) {
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [confirm, setConfirm] = useState(false);
+  const [pending, startTransition] = useTransition();
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const all = rows.length > 0 && rows.every((r) => selected.has(r.id));
+  const toggle = (id: string) =>
+    setSelected((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+
+  const approve = () =>
+    startTransition(async () => {
+      const r = await approvePendingConvosAction([...selected]);
+      setConfirm(false);
+      if (!r.ok) return setMsg({ ok: false, text: r.error });
+      const { approved, late, skipped } = r.data;
+      const reasons = Object.entries(skipped.reduce<Record<string, number>>((m, s) => ({ ...m, [s.reason]: (m[s.reason] ?? 0) + 1 }), {}))
+        .map(([reason, n]) => `${n} ${reason.toLowerCase()}`)
+        .join(", ");
+      setMsg({
+        ok: true,
+        text:
+          `Approved ${approved}${late ? ` (${late} paid in ${currentWeek}, since their own week is locked)` : ""}.` +
+          (skipped.length ? ` Skipped ${skipped.length}: ${reasons}.` : ""),
+      });
+      setSelected(new Set());
+    });
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <Button size="sm" variant="outline" disabled={rows.length === 0 || pending} onClick={() => setSelected(all ? new Set() : new Set(rows.map((r) => r.id)))}>
+          {all ? "Clear selection" : `Select all shown (${rows.length})`}
+        </Button>
+        <span className="text-muted-foreground">{selected.size} selected</span>
+        <Button size="sm" disabled={selected.size === 0 || pending} onClick={() => setConfirm(true)}>
+          Approve selected
+        </Button>
+      </div>
+      {confirm && (
+        <div className="space-y-2 rounded-lg border border-primary/40 bg-primary/5 p-3 text-sm">
+          <p>
+            Count <strong>{selected.size}</strong> pending {selected.size === 1 ? "convo" : "convos"} as qualified, without a reply? Each pays its
+            VA, Lead VA and Lead Manager at today&apos;s rates and counts on this week&apos;s leaderboards. Convos from a locked week are paid in{" "}
+            <strong>{currentWeek}</strong>. This can&apos;t be undone.
+          </p>
+          <p className="text-muted-foreground">Skipped automatically: any that are no longer pending, had no VA on the account, or aren&apos;t Tier 1.</p>
+          <div className="flex gap-2">
+            <Button size="sm" disabled={pending} onClick={approve}>
+              {pending ? "Approving…" : `Confirm: approve ${selected.size}`}
+            </Button>
+            <Button size="sm" variant="ghost" disabled={pending} onClick={() => setConfirm(false)}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+      {msg && <p className={msg.ok ? "text-sm text-emerald-700 dark:text-emerald-400" : "text-sm text-destructive"}>{msg.text}</p>}
+      <ul className="divide-y rounded-xl border bg-card">
+        {rows.length === 0 && <li className="p-4 text-sm text-muted-foreground">No pending convos match.</li>}
+        {rows.map((r) => (
+          <li key={r.id} className="flex items-start gap-3 px-4 py-3">
+            <input
+              type="checkbox"
+              className="mt-1 size-4 shrink-0"
+              aria-label="Select convo"
+              checked={selected.has(r.id)}
+              onChange={() => toggle(r.id)}
+              disabled={pending}
+            />
+            <div className="min-w-0 flex-1">{r.content}</div>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

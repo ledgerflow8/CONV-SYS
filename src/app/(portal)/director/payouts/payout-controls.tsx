@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { formatCents } from "@/lib/money";
 import {
+  clearAllWalletsAction,
   lockFinishedWeeksAction,
   lockWeekAction,
   markPayoutFailedAction,
@@ -125,6 +126,52 @@ export function PayoutRowActions({
       </div>
       {hash && !validHash && <p className="text-xs text-destructive">A tx hash is 64 hex characters (optionally starting 0x).</p>}
       {error && <p className="text-xs text-destructive">{error}</p>}
+    </div>
+  );
+}
+
+/** Two steps: the counts and what happens, then Confirm. */
+export function ClearWalletsButton({ users, unpaid }: { users: number; unpaid: number }) {
+  const [confirm, setConfirm] = useState(false);
+  const [pending, startTransition] = useTransition();
+  const [msg, setMsg] = useState<string | null>(null);
+
+  if (!confirm) {
+    return (
+      <div className="space-y-2">
+        <Button variant="outline" className="border-destructive/50 text-destructive" disabled={users + unpaid === 0} onClick={() => setConfirm(true)}>
+          Clear all wallet addresses
+        </Button>
+        {msg && <p className="text-sm">{msg}</p>}
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-2 rounded-lg border border-destructive/40 p-3 text-sm">
+      <p>
+        This removes the saved wallet of <strong>{users}</strong> {users === 1 ? "person" : "people"} and the old wallet on{" "}
+        <strong>{unpaid}</strong> unpaid payout {unpaid === 1 ? "line" : "lines"}. Everyone sees the &ldquo;Payout address missing&rdquo;
+        banner until they add an Aptos address; then use &ldquo;Use current wallet&rdquo; on their unpaid lines. Paid lines keep their
+        wallet. The old addresses stay in the audit log.
+      </p>
+      <div className="flex gap-2">
+        <Button
+          variant="destructive"
+          disabled={pending}
+          onClick={() =>
+            startTransition(async () => {
+              const r = await clearAllWalletsAction();
+              setMsg(r.ok ? `Cleared ${r.data.users} wallets and ${r.data.payouts} unpaid payout lines.` : r.error);
+              setConfirm(false);
+            })
+          }
+        >
+          {pending ? "Clearing…" : "Confirm: clear all"}
+        </Button>
+        <Button variant="ghost" disabled={pending} onClick={() => setConfirm(false)}>
+          Cancel
+        </Button>
+      </div>
     </div>
   );
 }

@@ -1,13 +1,14 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { db } from "@/lib/db";
 import { ingestConvoEvent, lockedWeekFor } from "@/lib/ingest";
-import { lockFinishedWeeks, lockWeek, markPayoutFailed, markPayoutPaid, refreshPayoutWallet, setWallet } from "@/lib/payouts";
+import { clearAllWallets, lockFinishedWeeks, lockWeek, markPayoutFailed, markPayoutPaid, refreshPayoutWallet, setWallet } from "@/lib/payouts";
 import { weekBounds } from "@/lib/weeks";
 import { asActor, makeAccount, makeTeam, makeUser, assign, resetDb, setSetting } from "../../test/fixtures";
 
 const TZ = "Etc/GMT-2";
-const W1 = "0x52908400098527886E0F7030069857D2E4169EE7";
-const W2 = "0x8617E340B3D01FA5F11F306F4090FD50E238070D";
+const W1 = "0x9f3a6c1e5b7d4e8a9c217d4e5f6a8b90c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8"; // Aptos (since 2026-10-29)
+const W2 = "0x0000a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e";
+const EVM = "0x52908400098527886E0F7030069857D2E4169EE7"; // a pre-Aptos wallet
 const HASH = "ab".repeat(32);
 
 const thisWeek = () => weekBounds(new Date(), TZ);
@@ -199,12 +200,70 @@ describe("paying", () => {
 describe("setWallet", () => {
   it("validates, audits before/after, and the Director can't set one", async () => {
     const t = await makeTeam();
-    expect((await setWallet(asActor(t.va), "0x123")).ok).toBe(false);
+    expect((await setWallet(asActor(t.va), "0x12z")).ok).toBe(false);
+    const evm = await setWallet(asActor(t.va), EVM);
+    expect(!evm.ok && evm.error).toMatch(/Ethereum-style/);
     expect((await setWallet(asActor(t.va), ` ${W1} `)).ok).toBe(true);
     await setWallet(asActor(t.va), W2);
     const logs = await db.auditLog.findMany({ where: { action: "wallet.set", target: t.va.id }, orderBy: { createdAt: "asc" } });
     expect(logs.map((l) => l.meta)).toEqual([{ before: null, after: W1 }, { before: W1, after: W2 }]);
     expect((await setWallet(asActor(t.director), W1)).ok).toBe(false);
+  });
+
+  it("a short Aptos address is stored left-padded to 64", async () => {
+    const t = await makeTeam();
+    const r = await setWallet(asActor(t.va), "0xa1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e"); // W2 without its leading zeros
+    expect(r.ok && r.data.walletAddress).toBe(W2);
+    expect((await db.user.findUniqueOrThrow({ where: { id: t.va.id } })).walletAddress).toBe(W2);
+  });
+});
+
+describe("move to Aptos (2026-10-29)", () => {
+  it("the lock never snapshots a pre-Aptos address, and such a line can't be marked paid", async () => {
+    const t = await makeTeam();
+    await db.user.update({ where: { id: t.va.id }, data: { walletAddress: EVM } }); // saved before the move
+    await qualifyLastWeek(t.account.username, "p");
+    const week = await lastWeekRow();
+    const r = await lockWeek(null, week.id);
+    expect(r.ok).toBe(true);
+    const va = await db.payout.findFirstOrThrow({ where: { weekId: week.id, role: "VA" } });
+    expect(va.walletAddress).toBeNull();
+
+    // A line locked before this release still holds the EVM address: paying it is refused.
+    await db.payout.update({ where: { id: va.id }, data: { walletAddress: EVM } });
+    const paid = await markPayoutPaid(asActor(t.director), va.id, HASH);
+    expect(!paid.ok && paid.error).toMatch(/isn't an Aptos address/);
+    expect((await refreshPayoutWallet(asActor(t.director), va.id)).ok).toBe(false); // they still have no Aptos wallet
+    await setWallet(asActor(t.va), W1);
+    expect((await refreshPayoutWallet(asActor(t.director), va.id)).ok).toBe(true);
+    expect((await markPayoutPaid(asActor(t.director), va.id, HASH)).ok).toBe(true);
+  });
+
+  it("Clear all: Director only; wipes every wallet and unpaid lines' wallets, keeps paid ones, audits the old addresses", async () => {
+    const t = await makeTeam();
+    await db.user.update({ where: { id: t.va.id }, data: { walletAddress: W1 } });
+    await db.user.update({ where: { id: t.lva.id }, data: { walletAddress: EVM } });
+    await qualifyLastWeek(t.account.username, "p");
+    const week = await lastWeekRow();
+    await lockWeek(null, week.id);
+    const vaLine = await db.payout.findFirstOrThrow({ where: { weekId: week.id, role: "VA" } });
+    await markPayoutPaid(asActor(t.director), vaLine.id, HASH); // paid: keeps W1
+    await db.payout.updateMany({ where: { weekId: week.id, role: "LEAD_VA" }, data: { walletAddress: EVM } }); // an old unpaid line
+
+    expect((await clearAllWallets(asActor(t.lm))).ok).toBe(false);
+    const r = await clearAllWallets(asActor(t.director));
+    expect(r.ok && r.data).toEqual({ users: 2, payouts: 1 });
+
+    expect(await db.user.count({ where: { walletAddress: { not: null } } })).toBe(0);
+    expect((await db.payout.findUniqueOrThrow({ where: { id: vaLine.id } })).walletAddress).toBe(W1);
+    expect((await db.payout.findFirstOrThrow({ where: { weekId: week.id, role: "LEAD_VA" } })).walletAddress).toBeNull();
+    const log = await db.auditLog.findFirstOrThrow({ where: { action: "wallet.clear_all" } });
+    const meta = log.meta as { before: { userId: string; wallet: string }[]; payoutsBefore: { wallet: string }[] };
+    expect(meta.before).toEqual(expect.arrayContaining([{ userId: t.va.id, wallet: W1 }, { userId: t.lva.id, wallet: EVM }]));
+    expect(meta.payoutsBefore.map((p) => p.wallet)).toEqual([EVM]);
+
+    // Anyone can add one again right away.
+    expect((await setWallet(asActor(t.lva), W2)).ok).toBe(true);
   });
 });
 

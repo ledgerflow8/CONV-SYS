@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { ChevronRight } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatCard } from "@/components/stat-card";
 import { StatusBadge } from "@/components/status-badge";
 import { TopBar } from "@/components/shell/top-bar";
@@ -10,7 +10,8 @@ import { formatCents } from "@/lib/money";
 import { scopeFor } from "@/lib/scope";
 import { currentPeriods, inWeek, qualifiedTotals } from "@/lib/stats";
 import { formatDay, formatPeriod } from "@/lib/time";
-import { LockFinishedWeeksButton } from "./payout-controls";
+import { isAptosAddress, WALLET_NETWORK } from "@/lib/wallet";
+import { ClearWalletsButton, LockFinishedWeeksButton } from "./payout-controls";
 
 export default async function DirectorPayoutsPage() {
   const user = await requireRole("DIRECTOR");
@@ -28,6 +29,11 @@ export default async function DirectorPayoutsPage() {
     }),
     db.payout.groupBy({ by: ["weekId", "status"], where: scope.payout, _count: true, _sum: { amountCents: true } }),
   ]);
+  const [savedWallets, unpaidWithWallet] = await Promise.all([
+    db.user.findMany({ where: { AND: [scope.user, { walletAddress: { not: null } }] }, select: { walletAddress: true } }),
+    db.payout.count({ where: { AND: [scope.payout, { status: { not: "SENT" } }, { walletAddress: { not: null } }] } }),
+  ]);
+  const aptosWallets = savedWallets.filter((u) => isAptosAddress(u.walletAddress)).length;
   const now = new Date();
   const dueToLock = weeks.filter((w) => w.status === "OPEN" && w.endsAt <= now).length;
 
@@ -46,6 +52,19 @@ export default async function DirectorPayoutsPage() {
           {dueToLock ? `${dueToLock} finished week${dueToLock > 1 ? "s" : ""} waiting to lock.` : "Nothing waiting to lock."}
         </p>
       </div>
+
+      <Card className="mb-4">
+        <CardHeader>
+          <CardTitle className="text-base">Payout wallets ({WALLET_NETWORK})</CardTitle>
+          <CardDescription>
+            {savedWallets.length} saved, {aptosWallets} of them {WALLET_NETWORK} addresses. Anyone without an {WALLET_NETWORK} address sees a
+            banner asking for one.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ClearWalletsButton users={savedWallets.length} unpaid={unpaidWithWallet} />
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
