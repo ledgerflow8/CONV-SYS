@@ -81,11 +81,13 @@ class AiEngine:
         crypto: Crypto,
         data_dir: Path,
         http: httpx.AsyncClient,
+        phone_filter_enabled: bool = False,
     ):
         self.sessionmaker = sessionmaker
         self.manager = manager
         self.capital = capital
         self.crypto = crypto
+        self.phone_filter_enabled = phone_filter_enabled  # feature flag for the Tier-1 pre-filter
         self.media_dir = data_dir / "ai_media"
         self.media_dir.mkdir(parents=True, exist_ok=True)
         self._http = http
@@ -233,6 +235,8 @@ class AiEngine:
 
     async def _tier_gate(self, s: AsyncSession, profile: Profile, chat: Chat) -> str:
         """Resolve the Tier-1 filter for this chat: global settings, with a per-persona override."""
+        if not self.phone_filter_enabled:
+            return tier.ALLOW  # feature flag off → no filtering at all
         enabled = bool(await get_setting(s, "tier1_only", False))
         hidden = await get_setting(s, "tier1_hidden", "ai")
         tier1 = await get_setting(s, "tier1_countries", None) or tier.DEFAULT_TIER1

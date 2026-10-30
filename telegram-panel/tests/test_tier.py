@@ -11,7 +11,7 @@ from panel.main import create_app
 from panel.models import Chat
 from panel.tier import ALLOW, REJECT_NON_TIER1, SKIP, tier_decision
 from panel.tg.client import IncomingMessage, PeerInfo
-from tests.conftest import H, PASSWORD, set_password, speed_up_imports
+from tests.conftest import H, PASSWORD, make_settings, set_password, speed_up_imports
 from tests.fake_tg import FakeDirectory
 from tests.test_ai import FakeCapital, cresp, deliver, get_chat, run, run_turn, set_capital, setup
 
@@ -51,14 +51,21 @@ def directory():
     return FakeDirectory()
 
 
+def _app(directory, tmp_path, *, flag):
+    app = create_app(make_settings(tmp_path, phone_filter_enabled=flag), dist=tmp_path / "x", client_factory=directory.factory)
+    c = TestClient(app, base_url="https://panel.example.com")
+    c.__enter__()
+    set_password(c)
+    speed_up_imports(c)
+    c.post("/api/auth/login", json={"password": PASSWORD}, headers=H)
+    return c
+
+
 @pytest.fixture
-def client(directory, settings, tmp_path):
-    app = create_app(settings, dist=tmp_path / "x", client_factory=directory.factory)
-    with TestClient(app, base_url="https://panel.example.com") as c:
-        set_password(c)
-        speed_up_imports(c)
-        c.post("/api/auth/login", json={"password": PASSWORD}, headers=H)
-        yield c
+def client(directory, tmp_path):
+    c = _app(directory, tmp_path, flag=True)  # feature flag ON, so the gate actually runs
+    yield c
+    c.__exit__(None, None, None)
 
 
 def _set(client, **kw):
@@ -113,3 +120,18 @@ def test_hidden_phone_default_lets_capitalbot_decide(client, directory):
     deliver(client, acc, IncomingMessage(_fan(None), tg_msg_id=1, out=False, kind="text", text="hi", at=at(9)))
     run_turn(client, acc)
     assert len(client.app.state.ai.capital.calls) == 1
+
+
+def test_feature_flag_off_disables_filtering_and_hides_settings(directory, tmp_path, monkeypatch):
+    monkeypatch.setattr(tier, "country_for_phone", lambda p: "JM" if p else None)
+    c = _app(directory, tmp_path, flag=False)  # PHONE_FILTER_ENABLED=false
+    try:
+        assert c.get("/api/system/tier", headers=H).json()["feature_enabled"] is False  # UI hides itself
+        acc = setup(c, directory, 99, 9999, "off")
+        _set(c, tier1_only=True)  # set, but the flag is off, so it must have no effect
+        set_capital(c, FakeCapital(cresp(texts=["hi"], conversation_id=1)))
+        deliver(c, acc, IncomingMessage(_fan("+18765550132"), tg_msg_id=1, out=False, kind="text", text="hi", at=at(9)))
+        run_turn(c, acc)
+        assert len(c.app.state.ai.capital.calls) == 1  # Capitalbot still called — no filtering while off
+    finally:
+        c.__exit__(None, None, None)

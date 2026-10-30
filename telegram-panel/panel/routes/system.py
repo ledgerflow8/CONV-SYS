@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 
+from panel import tier
 from panel.auth import require_login
 from panel.backup import BackupError
 from panel.db import get_setting, set_setting
@@ -201,7 +202,7 @@ async def _tier_settings(session) -> dict:
 @router.get("/tier")
 async def get_tier(request: Request) -> dict:
     async with _service(request).sessionmaker() as session:
-        return {"tier": await _tier_settings(session)}
+        return {"tier": await _tier_settings(session), "feature_enabled": bool(request.app.state.settings.phone_filter_enabled)}
 
 
 @router.patch("/tier")

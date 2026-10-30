@@ -457,8 +457,10 @@ export default function Status() {
 
 function TierSettings() {
   const [t, setT] = useState(null);
+  const [enabled, setEnabled] = useState(false); // feature flag (PHONE_FILTER_ENABLED)
   const [err, setErr] = useState("");
-  const refresh = () => api("/api/system/tier").then((r) => setT(r.tier)).catch((e) => setErr(e.message));
+  const refresh = () =>
+    api("/api/system/tier").then((r) => { setT(r.tier); setEnabled(r.feature_enabled); }).catch((e) => setErr(e.message));
   useEffect(() => { refresh(); }, []);
   const save = async (patch) => {
     setT((p) => ({ ...p, ...patch }));
@@ -471,7 +473,7 @@ function TierSettings() {
       refresh();
     }
   };
-  if (!t) return null;
+  if (!enabled || !t) return null; // hidden entirely until the feature flag is on
   return (
     <section className="space-y-3 rounded-xl border bg-card p-4">
       <h2 className="font-medium">Tier-1 filter</h2>

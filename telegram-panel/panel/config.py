@@ -25,6 +25,10 @@ class Settings(BaseSettings):
 
     capital_license_key: str | None = None
 
+    # Our own Tier-1 phone pre-filter is behind a flag, OFF by default: when false no filtering
+    # happens and the UI hides its settings. Set PHONE_FILTER_ENABLED=true to turn it on.
+    phone_filter_enabled: bool = False
+
     @field_validator("portal_ingest_url", mode="before")
     @classmethod
     def _ingest_url(cls, v: object) -> object:

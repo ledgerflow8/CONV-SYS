@@ -77,6 +77,7 @@ hashes and secrets as **secret** (click the eye/lock) so they're hidden in the d
 | `PORTAL_INGEST_API_KEY` | *(portal's `INGEST_API_KEY`)* | secret; used from step 2. |
 | `PORTAL_INGEST_HMAC_SECRET` | *(portal's `INGEST_HMAC_SECRET`)* | secret; used from step 2. |
 | `CAPITAL_LICENSE_KEY` | *(Capitalbot)* | secret; used from step 3. |
+| `PHONE_FILTER_ENABLED` | `false` | our own Tier-1 phone pre-filter. Leave `false` (no filtering, settings hidden); set `true` to enable it, then configure under Status → Tier-1 filter. |
 | `PYTHON_VERSION` | `3.12.7` | pins the build toolchain. |
 | `NODE_VERSION` | `22` | so the frontend build (Vite 8) has Node ≥ 20. |
 

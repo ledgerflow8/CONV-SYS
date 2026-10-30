@@ -73,7 +73,7 @@ def create_app(settings: Settings | None = None, dist: Path = DIST, client_facto
             # Capitalbot client + the AI reply worker (step 3). Idle until CAPITAL_LICENSE_KEY is set.
             capital = CapitalClient(settings.capital_license_key, http)
             app.state.capital = capital
-            engine_ai = AiEngine(sessionmaker, manager, capital, app.state.crypto, settings.data_dir, http)
+            engine_ai = AiEngine(sessionmaker, manager, capital, app.state.crypto, settings.data_dir, http, phone_filter_enabled=settings.phone_filter_enabled)
             engine_ai.service_record = app.state.service.record_ai_message
             engine_ai.report_ai_outcome = app.state.service.report_ai_outcome
             app.state.service.ai = engine_ai
