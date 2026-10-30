@@ -12,6 +12,65 @@ const STATE_TONE = {
   filtered: "text-amber-600",
 };
 
+function Security({ accountId, connected }) {
+  const [pw, setPw] = useState("");
+  const [result, setResult] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState("");
+
+  const reset = async () => {
+    setErr(""); setResult(""); setBusy("reset");
+    try {
+      await api(`/api/accounts/${accountId}/security/reset-sessions`, { method: "POST" });
+      setResult("All other Telegram sessions were logged out.");
+    } catch (e) { setErr(e.message); } finally { setBusy(""); }
+  };
+
+  const set2fa = async () => {
+    if (!pw) return;
+    setErr(""); setResult(""); setBusy("2fa");
+    try {
+      const r = await api(`/api/accounts/${accountId}/security/2fa`, { method: "POST", body: { new_password: pw } });
+      setResult(`2FA password saved: ${r.password}  (copy it somewhere safe — it isn't shown again)`);
+      setPw("");
+    } catch (e) { setErr(e.message); } finally { setBusy(""); }
+  };
+
+  return (
+    <div className="space-y-2 border-t pt-4">
+      <h3 className="text-xs font-medium text-muted-foreground">Security</h3>
+      {!connected && <p className="text-xs text-muted-foreground">Power the account on to use these.</p>}
+      <button
+        type="button"
+        disabled={!connected || !!busy}
+        onClick={reset}
+        className="h-10 w-full rounded-lg border font-medium disabled:opacity-50"
+      >
+        {busy === "reset" ? "Terminating…" : "Terminate all other sessions"}
+      </button>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={pw}
+          onChange={(e) => setPw(e.target.value)}
+          placeholder="New 2FA password"
+          className="h-10 flex-1 rounded-lg border bg-background px-3 outline-none focus:ring-2 focus:ring-ring"
+        />
+        <button
+          type="button"
+          disabled={!connected || !pw || !!busy}
+          onClick={set2fa}
+          className="h-10 shrink-0 rounded-lg bg-primary px-3 font-medium text-primary-foreground disabled:opacity-50"
+        >
+          {busy === "2fa" ? "Saving…" : "Set 2FA"}
+        </button>
+      </div>
+      {result && <p className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700 break-all">{result}</p>}
+      {err && <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{err}</p>}
+    </div>
+  );
+}
+
 export default function AccountSheet({ accountId, onClose, onChanged }) {
   const [acc, setAcc] = useState(null);
   const [catalog, setCatalog] = useState(null); // { configured, models, presets }
@@ -189,6 +248,8 @@ export default function AccountSheet({ accountId, onClose, onChanged }) {
               }}
             />
           </div>
+
+          <Security accountId={accountId} connected={acc.connected} />
 
           {!confirming ? (
             <button

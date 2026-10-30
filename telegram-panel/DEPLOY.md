@@ -116,9 +116,14 @@ Or **Manual Deploy → Deploy latest commit** in the dashboard. Env-var or setti
   panel to do the work over its own Telegram connections.
 
 ## Backups
-**Settings → Disks → tgpanel-data** offers scheduled disk snapshots — enable them. A snapshot holds the
+**Settings → Disks → tgpanel-data** offers scheduled disk snapshots — **enable them**. A snapshot holds the
 encrypted sessions and SQLite; store `PANEL_ENC_KEY` **outside** the snapshot or a leaked backup is useless to
 you too, but a lost key makes every session unrecoverable.
+
+For a portable, key-independent copy, use **Status → Backup → Export backup**: it downloads an encrypted archive
+of every account (sessions + 2FA), locked with a password you set at export time (not `PANEL_ENC_KEY`), so it
+restores onto a brand-new panel via **Status → Backup → Restore**. Keep that password safe — it can't be
+recovered. Restored accounts come in powered off; power them on to connect.
 
 ## Notes / later
 - **Logs:** the **Logs** tab (equivalent to the old `journalctl -u tgpanel -f`).

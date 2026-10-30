@@ -22,6 +22,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from panel import tier
 from panel.capital import KIND_MARKERS, UPLOADABLE_KINDS, CapitalClient, CapitalError, CapitalResponse
 from panel.crypto import Crypto
 from panel.db import get_setting
@@ -162,6 +163,8 @@ class AiEngine:
                 Path(file_path).unlink(missing_ok=True)
 
         self.last_error = None
+        if self.credit_over_until is not None and not resp.flag("aiCreditOver"):
+            self.credit_over_until = None  # a call went through without the flag → credits are back, resume now
         answered = await self._apply(account_id, peer_id, resp, uploaded=bool(file_path), out_before=req["out_before"])
         if resp.has_content and not answered and self.manager.is_connected(account_id):
             await self._send(account_id, peer_id, resp)
@@ -187,6 +190,17 @@ class AiEngine:
             if chat is None or chat.ai_state not in KEEP_CALLING:
                 return None
             if chat.cooldown_until is not None and utcnow() < chat.cooldown_until:
+                return None
+            gate = await self._tier_gate(s, profile, chat)
+            if gate == tier.REJECT_NON_TIER1:
+                # Visible non-Tier-1 phone: don't pay Capitalbot. The portal already has the phone
+                # (sent on the first convo event) and rejects it as non_tier1 on its own.
+                chat.ai_state, chat.ai_state_reason = "filtered", "non_tier1"
+                await self._log(s, "info", "tier_skipped", f"@{peer_id}: non-Tier-1 phone — not sent to AI", account_id)
+                await s.commit()
+                return None
+            if gate == tier.SKIP:
+                await s.commit()  # hidden phone, owner set Tier-1-only to not reply: stay quiet this turn
                 return None
             rows = (
                 await s.scalars(
@@ -216,6 +230,20 @@ class AiEngine:
                 "media": self._pick_fan_media(msgs, chat.last_out_at),
                 "media_counter": dict(chat.media_uploads or {}),
             }
+
+    async def _tier_gate(self, s: AsyncSession, profile: Profile, chat: Chat) -> str:
+        """Resolve the Tier-1 filter for this chat: global settings, with a per-persona override."""
+        enabled = bool(await get_setting(s, "tier1_only", False))
+        hidden = await get_setting(s, "tier1_hidden", "ai")
+        tier1 = await get_setting(s, "tier1_countries", None) or tier.DEFAULT_TIER1
+        override = await get_setting(s, f"tier1_profile:{profile.id}", None)
+        if isinstance(override, dict):
+            if override.get("only") is not None:
+                enabled = bool(override["only"])
+            if override.get("hidden"):
+                hidden = override["hidden"]
+        country = tier.country_for_phone(chat.peer_phone)
+        return tier.tier_decision(country, enabled=enabled, hidden_mode=hidden, tier1=list(tier1))
 
     def _pick_fan_media(self, msgs: list[Message], out_before: datetime | None) -> Message | None:
         """The newest uploadable fan media since the last reply (PLAN.md §4.3 step 6)."""
@@ -328,6 +356,10 @@ class AiEngine:
             await client.mark_read(peer)
         except Exception:
             log.warning("mark_read failed account=%s peer=%s", account_id, peer_id)
+        try:
+            await client.set_online()  # a reply should show the account online right away
+        except Exception:
+            pass
         for item in resp.content:
             try:
                 if item.type == "text":

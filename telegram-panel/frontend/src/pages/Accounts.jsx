@@ -16,7 +16,6 @@ const CHIPS = [
 
 export default function Accounts() {
   const [data, setData] = useState(null);
-  const [status, setStatus] = useState(null);
   const [error, setError] = useState("");
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState("all");
@@ -30,7 +29,6 @@ export default function Accounts() {
     } catch (e) {
       setError(e.message);
     }
-    api("/api/system/status").then(setStatus).catch(() => {});
   }, []);
 
   // Debounced search.
@@ -48,9 +46,6 @@ export default function Accounts() {
 
   const accounts = data?.accounts ?? [];
   const shown = filter === "all" ? accounts : accounts.filter((a) => a.color === filter);
-  const banners = [];
-  if (status?.ai?.credit_over_until) banners.push("Capitalbot AI credits are depleted — replies are paused.");
-  if (status?.portal && (status.portal.failed > 0 || status.portal.last_error)) banners.push("Portal sync is failing — see Status.");
 
   return (
     <div className="space-y-4">
@@ -96,10 +91,6 @@ export default function Accounts() {
           </button>
         ))}
       </div>
-
-      {banners.map((b) => (
-        <p key={b} className="rounded-lg bg-destructive px-3 py-2 text-sm font-medium text-white">{b}</p>
-      ))}
 
       {error && <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
 

@@ -29,6 +29,10 @@ class AccountManager:
     def online_count(self) -> int:
         return len(self._clients)
 
+    def connected_items(self) -> list[tuple[int, "TgClient"]]:
+        """A snapshot of (account_id, client) for every live connection."""
+        return list(self._clients.items())
+
     async def test(self, params: ConnectParams) -> tuple[AccountInfo, TgClient]:
         """Connect a candidate during import. On success the SAME client is adopted as the live
         connection (adopt()), so a working session is never connected twice."""

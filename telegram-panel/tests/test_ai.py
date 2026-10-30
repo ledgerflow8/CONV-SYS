@@ -385,6 +385,28 @@ def test_genderfiltered_sends_no_tier_verdict(client, directory):
     assert all("tier" not in p for p in convos(client))
 
 
+# ── presence + credits (client feedback 2026-10-30) ─────────────────────────
+def test_reply_marks_the_account_online(client, directory):
+    acc = setup(client, directory, 94, 9900, "onl")
+    set_capital(client, FakeCapital(cresp(texts=["hi"], conversation_id=1)))
+    deliver(client, acc, IncomingMessage(fan(), tg_msg_id=1, out=False, kind="text", text="hi", at=at(9)))
+    run_turn(client, acc)
+    assert fake_client(client, acc).online_pings >= 1  # a reply shows the account online, not "last seen"
+
+
+def test_credits_resume_automatically_on_the_next_successful_call(client, directory):
+    acc = setup(client, directory, 95, 9910, "cr")
+    set_capital(client, FakeCapital(cresp(aiCreditOver=True), cresp(texts=["back"], conversation_id=2)))
+    deliver(client, acc, IncomingMessage(fan(), tg_msg_id=1, out=False, kind="text", text="hi", at=at(9)))
+    run_turn(client, acc)
+    assert client.app.state.ai.credit_over_until is not None  # paused
+
+    client.app.state.ai.credit_over_until = datetime(2000, 1, 1, tzinfo=timezone.utc)  # pretend the pause elapsed
+    deliver(client, acc, IncomingMessage(fan(), tg_msg_id=2, out=False, kind="text", text="still there?", at=at(10)))
+    run_turn(client, acc)
+    assert client.app.state.ai.credit_over_until is None  # a successful call cleared the pause
+
+
 # ── overrides are never sent to Capitalbot (client decision 2026-10-17) ──────
 def test_overrides_are_never_sent(client, directory):
     acc = _import(client, directory, 90, AccountInfo(9100, "nadia", "+1", "A"))

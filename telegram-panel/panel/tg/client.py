@@ -177,6 +177,11 @@ class TgClient(Protocol):
     async def set_username(self, username: str) -> None: ...
     async def set_profile_photo(self, path: str) -> None: ...
     async def delete_profile_photo(self) -> None: ...
+    # Account security.
+    async def terminate_other_sessions(self) -> None: ...
+    async def set_2fa(self, current_password: str | None, new_password: str) -> None: ...
+    # Presence: tell Telegram the account is online (so it shows "online", not "last seen …").
+    async def set_online(self) -> None: ...
 
 
 ClientFactory = Callable[[ConnectParams], TgClient]
@@ -478,6 +483,52 @@ class TelethonClient:
             raise classify(e) from e
         if remaining != 0:
             raise TgError("photo_failed", f"Couldn't remove the photo — Telegram still shows {remaining}. Try again.")
+
+    # ── account security ─────────────────────────────────────────────────────
+    async def _reset_available_at(self) -> datetime | None:
+        """When ResetAuthorizations will be allowed: the current session's creation time + 24h."""
+        from datetime import timedelta
+
+        try:
+            auths = await self._c(functions.account.GetAuthorizationsRequest())
+            for a in auths.authorizations:
+                if getattr(a, "current", False) or a.hash == 0:
+                    return a.date_created + timedelta(hours=24)
+        except Exception:
+            return None
+        return None
+
+    async def terminate_other_sessions(self) -> None:
+        """Log out every OTHER Telegram session for this account; ours is kept. Telegram forbids this
+        in the first 24h after a session signs in (FRESH_RESET_AUTHORISATION_FORBIDDEN)."""
+        try:
+            await self._c(functions.auth.ResetAuthorizationsRequest())
+        except errors.FreshResetAuthorisationForbiddenError as e:
+            avail = await self._reset_available_at()
+            when = f" Available after {avail:%Y-%m-%d %H:%M} UTC." if avail else ""
+            raise TgError("reset_too_fresh", "Telegram blocks resetting other sessions for 24h after sign-in." + when, type(e).__name__) from e
+        except Exception as e:
+            raise classify(e) from e
+
+    async def set_2fa(self, current_password: str | None, new_password: str) -> None:
+        """Set or change the account's 2FA (cloud) password. Telegram needs the current password when
+        one is already set; pass the supplier's existing password from the .json for that."""
+        try:
+            await self._c.edit_2fa(current_password=current_password or None, new_password=new_password)
+        except errors.PasswordHashInvalidError as e:
+            raise TgError("twofa_wrong", "The current 2FA password on file is wrong, so it can't be changed.", type(e).__name__) from e
+        except ValueError as e:
+            # Telethon raises ValueError when a current password is required but none was given.
+            raise TgError("twofa_needed", "This account already has 2FA set, and we don't have its current password to change it.", type(e).__name__) from e
+        except Exception as e:
+            raise classify(e) from e
+
+    async def set_online(self) -> None:
+        """Mark the account online (Telegram shows 'online' for ~5 min, then 'last seen recently')."""
+        try:
+            await self._c(functions.account.UpdateStatusRequest(offline=False))
+        except Exception as e:
+            raise classify(e) from e
 
     def on_private_message(self, cb: MessageCallback) -> None:
         async def handler(event: events.NewMessage.Event) -> None:

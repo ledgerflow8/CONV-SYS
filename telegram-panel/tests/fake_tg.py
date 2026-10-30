@@ -27,6 +27,9 @@ class FakeAccount:
     last_name: str | None = None
     about: str | None = None
     username_floodwait: int | None = None  # when set, check_username raises a FloodWait (limited)
+    # account security
+    twofa: str | None = None  # the current 2FA password Telegram has, if any
+    reset_too_fresh_until: datetime | None = None  # when set, terminate_other_sessions is forbidden until then
     # Full Telegram history per fan (peer id str → messages oldest first), for recovery scans.
     history: dict[str, list[IncomingMessage]] = field(default_factory=dict)
     scan_error: TgError | None = None  # raised by recent_peers (e.g. a long FloodWait)
@@ -47,6 +50,9 @@ class FakeClient:
         self.username_set: str | None = None
         self.photo_set: str | None = None
         self.photo_deleted = False
+        self.sessions_reset = 0
+        self.twofa_set_to: str | None = None
+        self.online_pings = 0
 
     async def start(self) -> AccountInfo:
         self._dir.started.append(self._params.session)
@@ -161,6 +167,25 @@ class FakeClient:
         self.photo_deleted = True
         if self._fake:
             self._fake.has_avatar = False
+
+    async def terminate_other_sessions(self) -> None:
+        if self._fake and self._fake.reset_too_fresh_until is not None:
+            raise TgError(
+                "reset_too_fresh",
+                f"Telegram blocks resetting other sessions for 24h after sign-in. Available after {self._fake.reset_too_fresh_until:%Y-%m-%d %H:%M} UTC.",
+                "FreshResetAuthorisationForbiddenError",
+            )
+        self.sessions_reset += 1
+
+    async def set_2fa(self, current_password: str | None, new_password: str) -> None:
+        if self._fake and self._fake.twofa and current_password != self._fake.twofa:
+            raise TgError("twofa_wrong", "The current 2FA password on file is wrong, so it can't be changed.", "PasswordHashInvalidError")
+        self.twofa_set_to = new_password
+        if self._fake:
+            self._fake.twofa = new_password
+
+    async def set_online(self) -> None:
+        self.online_pings += 1
 
     def on_private_message(self, cb) -> None:
         self._cb = cb

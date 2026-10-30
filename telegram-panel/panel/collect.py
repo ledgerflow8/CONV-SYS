@@ -4,6 +4,7 @@ Zips are read entry by entry with size limits; nothing is extracted to disk, so 
 the zip can't escape anywhere.
 """
 
+import hashlib
 import io
 import json
 import zipfile
@@ -66,11 +67,20 @@ def _entries(filename: str, data: bytes, budget: list[int]) -> list[tuple[str, b
 
 
 def collect(files: list[tuple[str, bytes]]) -> Collected:
-    """Pairs `x.session` with `x.json` from the same folder. Raises TooLarge / ValueError for a bad upload."""
+    """Find every `.session` in the upload (walking each zip recursively, at any depth) and pair it
+    with its `.json`:
+
+      1. a `.json` with the same name in the same folder — the common per-account layout
+         (`telegram-accounts-xxxx/<phone>/<phone>.session` + `<phone>.json`); else
+      2. a `.json` with the same basename anywhere — the `all_sessions/` + `all_json/` layout.
+
+    The same account appearing twice (identical session bytes) is collapsed. `__MACOSX`/dotfiles are
+    ignored. A `.json` that never pairs is reported invalid. Raises TooLarge / ValueError for a bad upload.
+    """
     budget = [MAX_TOTAL_BYTES]
-    sessions: dict[str, tuple[str, bytes]] = {}
-    metas: dict[str, tuple[str, bytes]] = {}
     result = Collected()
+    sessions: list[tuple[str, bytes]] = []
+    metas: list[tuple[str, bytes]] = []  # (path, content), in upload order
 
     for filename, data in files:
         name = PurePosixPath(filename.replace("\\", "/")).name or "upload"
@@ -82,26 +92,47 @@ def collect(files: list[tuple[str, bytes]]) -> Collected:
             result.invalid.append((name, str(e).split(": ", 1)[-1]))
             continue
         for path, content in entries:
-            p = PurePosixPath(path)
-            key = str(p.with_suffix("")).lower()
-            ext = p.suffix.lower()
+            if _skip(path):
+                continue  # __MACOSX / .DS_Store / any dotfile, at any depth
+            ext = PurePosixPath(path).suffix.lower()
             if ext == ".session":
-                sessions[key] = (path, content)
+                sessions.append((path, content))
             elif ext == ".json":
-                metas[key] = (path, content)
+                metas.append((path, content))
             elif ext == ".zip":
                 result.invalid.append((path, "zips inside zips aren't supported"))
             # anything else (readme.txt, tdata files…) is ignored
 
-    for key, (path, content) in sessions.items():
+    # Index the .json files for pairing, and remember which ones get used.
+    by_dirstem: dict[tuple[str, str], int] = {}
+    by_stem: dict[str, list[int]] = {}
+    for i, (path, _content) in enumerate(metas):
+        p = PurePosixPath(path)
+        by_dirstem[(str(p.parent).lower(), p.stem.lower())] = i
+        by_stem.setdefault(p.stem.lower(), []).append(i)
+    consumed: set[int] = set()
+
+    seen_sessions: set[str] = set()
+    for path, content in sessions:
+        digest = hashlib.sha256(content).hexdigest()
+        if digest in seen_sessions:
+            continue  # the same account's session appears more than once in the upload
+        seen_sessions.add(digest)
+        p = PurePosixPath(path)
+        idx = by_dirstem.get((str(p.parent).lower(), p.stem.lower()))
+        if idx is None:
+            same = by_stem.get(p.stem.lower())
+            idx = same[0] if same and len(same) == 1 else None
         c = Candidate(name=path, session=content)
-        if key in metas:
-            raw = metas.pop(key)[1]
+        if idx is not None:
+            consumed.add(idx)
             try:
-                c.meta = json.loads(raw.decode("utf-8-sig"))
+                c.meta = json.loads(metas[idx][1].decode("utf-8-sig"))
             except (UnicodeDecodeError, json.JSONDecodeError):
                 c.meta_error = "the .json next to it isn't valid JSON"
         result.candidates.append(c)
-    for path, _ in metas.values():
-        result.invalid.append((path, "no .session file with the same name"))
+
+    for i, (path, _content) in enumerate(metas):
+        if i not in consumed:
+            result.invalid.append((path, "no .session file with the same name"))
     return result

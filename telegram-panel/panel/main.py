@@ -81,6 +81,7 @@ def create_app(settings: Settings | None = None, dist: Path = DIST, client_facto
             await app.state.service.backfill_leads()  # one-time (idempotent): leads from already-converted chats
             await app.state.service.connect_powered_on()
             app.state.background.add(asyncio.create_task(worker.run()))
+            app.state.background.add(asyncio.create_task(app.state.service.keep_online_loop()))
             # Keeps DATA_DIR bounded: prunes old rows, sweeps leftover media, checkpoints the WAL.
             housekeeper = Housekeeper(engine, sessionmaker, settings.data_dir)
             app.state.housekeeper = housekeeper

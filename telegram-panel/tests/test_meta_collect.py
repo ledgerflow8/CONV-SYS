@@ -98,3 +98,39 @@ def test_collect_nested_zip_is_invalid():
     outer = _zip({"inner.zip": inner})
     got = collect([("outer.zip", outer)])
     assert any("zips inside zips" in r for _, r in got.invalid)
+
+
+def _meta(i: int) -> bytes:
+    return json.dumps({"app_id": i, "app_hash": "d" * 32}).encode()
+
+
+def test_collect_supplier_zip_folder_per_account():
+    # The real supplier layout: each account in its own folder, plus Mac cruft.
+    files = {"__MACOSX/._x": b"junk", ".DS_Store": b"junk"}
+    for i in range(1, 16):
+        files[f"telegram-accounts-5f3a/{i}0000/{i}0000.session"] = telethon_session_bytes(key(100 + i))
+        files[f"telegram-accounts-5f3a/{i}0000/{i}0000.json"] = _meta(i)
+    got = collect([("telegram-accounts-5f3a.zip", _zip(files))])
+    assert len(got.candidates) == 15  # not "1 found"
+    assert all(c.meta is not None for c in got.candidates)  # each paired with its own .json
+    assert not got.invalid
+
+
+def test_collect_all_sessions_all_json_layout():
+    # The other common layout: sessions and jsons split into sibling folders, paired by basename.
+    files: dict[str, bytes] = {}
+    for i in range(1, 16):
+        files[f"all_sessions/{i}0000.session"] = telethon_session_bytes(key(200 + i))
+        files[f"all_json/{i}0000.json"] = _meta(i)
+    got = collect([("batch.zip", _zip(files))])
+    assert len(got.candidates) == 15
+    assert all(c.meta and c.meta["app_id"] for c in got.candidates)
+    assert not got.invalid
+
+
+def test_collect_dedupes_same_account_appearing_twice():
+    sess = telethon_session_bytes(key(300))
+    files = {"all_sessions/a.session": sess, "backup/a.session": sess, "all_json/a.json": _meta(1)}
+    got = collect([("u.zip", _zip(files))])
+    assert len(got.candidates) == 1  # identical session bytes collapsed to one account
+    assert got.candidates[0].meta is not None

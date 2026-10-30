@@ -512,6 +512,111 @@ async def reset_chat(account_id: int, peer: str, request: Request) -> dict:
     return {"ok": True}
 
 
+# ── account security (terminate other sessions · set/change 2FA) ─────────────
+def _security_http(e: TgError) -> HTTPException:
+    if e.status in ("reset_too_fresh", "twofa_wrong", "twofa_needed"):
+        return HTTPException(409, e.detail)
+    return _tg_http(e)
+
+
+def _current_twofa(service, acc: Account) -> str | None:
+    """The 2FA password we hold for this account (supplier's, from the .json), or None."""
+    if not acc.twofa_enc:
+        return None
+    try:
+        return service.crypto.decrypt(acc.twofa_enc)
+    except Exception:
+        return None  # key changed / corrupt: Telegram will reject the change with a clear error
+
+
+class TwoFaBody(BaseModel):
+    new_password: str = Field(min_length=1, max_length=256)
+
+
+class BulkBody(BaseModel):
+    account_ids: list[int] = Field(min_length=1, max_length=500)
+
+
+class BulkTwoFaBody(BulkBody):
+    new_password: str = Field(min_length=1, max_length=256)
+
+
+async def _reset_sessions_on(service, account_id: int) -> None:
+    client = _require_connected(service, account_id)
+    await client.terminate_other_sessions()
+    async with service.sessionmaker() as session:
+        await service.log_activity(session, "info", "sessions_reset", "terminated all other Telegram sessions", account_id)
+        await session.commit()
+
+
+async def _set_2fa_on(service, account_id: int, new_password: str) -> None:
+    async with service.sessionmaker() as session:
+        acc = await session.get(Account, account_id)
+        if acc is None:
+            raise HTTPException(404, "No such account")
+        current = _current_twofa(service, acc)
+    client = _require_connected(service, account_id)
+    await client.set_2fa(current, new_password)
+    async with service.sessionmaker() as session:
+        acc = await session.get(Account, account_id)
+        acc.twofa_enc = service.crypto.encrypt(new_password)  # so a later change has the current password
+        acc.updated_at = utcnow()
+        await service.log_activity(session, "info", "twofa_set", "2FA password set/changed", account_id)
+        await session.commit()
+
+
+@router.post("/{account_id}/security/reset-sessions")
+async def reset_sessions(account_id: int, request: Request) -> dict:
+    try:
+        await _reset_sessions_on(_service(request), account_id)
+    except TgError as e:
+        raise _security_http(e) from e
+    return {"ok": True}
+
+
+@router.post("/{account_id}/security/2fa")
+async def set_account_2fa(account_id: int, body: TwoFaBody, request: Request) -> dict:
+    try:
+        await _set_2fa_on(_service(request), account_id, body.new_password)
+    except TgError as e:
+        raise _security_http(e) from e
+    return {"ok": True, "password": body.new_password}  # shown once so the owner can copy it
+
+
+async def _bulk(service, account_ids: list[int], action) -> list[dict]:
+    results = []
+    for account_id in account_ids:
+        async with service.sessionmaker() as session:
+            acc = await session.get(Account, account_id)
+        username = acc.username if acc else None
+        if acc is None:
+            results.append({"account_id": account_id, "username": None, "ok": False, "error": "No such account"})
+            continue
+        try:
+            await action(service, account_id)
+            results.append({"account_id": account_id, "username": username, "ok": True})
+        except HTTPException as e:
+            results.append({"account_id": account_id, "username": username, "ok": False, "error": e.detail})
+        except TgError as e:
+            results.append({"account_id": account_id, "username": username, "ok": False, "error": e.detail})
+    return results
+
+
+@router.post("/bulk/reset-sessions")
+async def bulk_reset_sessions(body: BulkBody, request: Request) -> dict:
+    results = await _bulk(_service(request), body.account_ids, _reset_sessions_on)
+    return {"results": results}
+
+
+@router.post("/bulk/2fa")
+async def bulk_set_2fa(body: BulkTwoFaBody, request: Request) -> dict:
+    async def action(service, account_id):
+        await _set_2fa_on(service, account_id, body.new_password)
+
+    results = await _bulk(_service(request), body.account_ids, action)
+    return {"results": results}
+
+
 @router.get("/{account_id}/avatar")
 async def avatar(account_id: int, request: Request) -> FileResponse:
     async with _service(request).sessionmaker() as session:

@@ -428,6 +428,9 @@ export default function Status() {
         </section>
       )}
 
+      <TierSettings />
+      <Backup />
+
       <section className="space-y-2 rounded-xl border bg-card p-4">
         <h2 className="font-medium">Recent activity</h2>
         {activity.length === 0 ? (
@@ -449,5 +452,126 @@ export default function Status() {
         )}
       </section>
     </div>
+  );
+}
+
+function TierSettings() {
+  const [t, setT] = useState(null);
+  const [err, setErr] = useState("");
+  const refresh = () => api("/api/system/tier").then((r) => setT(r.tier)).catch((e) => setErr(e.message));
+  useEffect(() => { refresh(); }, []);
+  const save = async (patch) => {
+    setT((p) => ({ ...p, ...patch }));
+    try {
+      const r = await api("/api/system/tier", { method: "PATCH", body: patch });
+      setT(r.tier);
+      setErr("");
+    } catch (e) {
+      setErr(e.message);
+      refresh();
+    }
+  };
+  if (!t) return null;
+  return (
+    <section className="space-y-3 rounded-xl border bg-card p-4">
+      <h2 className="font-medium">Tier-1 filter</h2>
+      <label className="flex items-center justify-between gap-4">
+        <span className="text-sm">
+          <span className="font-medium">Only reply to Tier 1 numbers</span>
+          <span className="block text-xs text-muted-foreground">Skip Capitalbot for a visible non-Tier-1 phone (saves credits).</span>
+        </span>
+        <Toggle on={!!t.only} label="Tier 1 only" onChange={(v) => save({ only: v })} />
+      </label>
+      <label className="flex items-center justify-between gap-4 text-sm">
+        <span>Hidden phone</span>
+        <select
+          value={t.hidden}
+          onChange={(e) => save({ hidden: e.target.value })}
+          className="h-9 rounded-lg border bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+        >
+          <option value="ai">Let Capitalbot decide</option>
+          <option value="skip">Don't reply</option>
+        </select>
+      </label>
+      <label className="block text-sm">
+        Tier 1 countries (ISO-2)
+        <input
+          defaultValue={t.countries.join(", ")}
+          onBlur={(e) => save({ countries: e.target.value.split(/[,\s]+/).filter(Boolean) })}
+          className="mt-1 h-9 w-full rounded-lg border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+        />
+      </label>
+      {err && <p className="text-sm text-destructive">{err}</p>}
+    </section>
+  );
+}
+
+function Backup() {
+  const [pw, setPw] = useState("");
+  const [imp, setImp] = useState({ pw: "", file: null });
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState("");
+
+  const exportNow = async () => {
+    if (pw.length < 8) { setErr("Use a backup password of at least 8 characters."); return; }
+    setErr(""); setMsg(""); setBusy("exp");
+    try {
+      const res = await fetch("/api/system/backup/export", {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "X-Panel": "1" }, body: JSON.stringify({ password: pw }),
+      });
+      if (!res.ok) throw new Error(`Export failed (${res.status})`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = res.headers.get("Content-Disposition")?.match(/filename="(.+?)"/)?.[1] || "panel-backup.tgpbak";
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+      setMsg("Backup downloaded. Store it and the password somewhere safe."); setPw("");
+    } catch (e) { setErr(e.message); } finally { setBusy(""); }
+  };
+
+  const restore = async () => {
+    if (!imp.file || !imp.pw) return;
+    setErr(""); setMsg(""); setBusy("imp");
+    try {
+      const fd = new FormData();
+      fd.append("password", imp.pw);
+      fd.append("file", imp.file);
+      const res = await fetch("/api/system/backup/import", { method: "POST", credentials: "same-origin", headers: { "X-Panel": "1" }, body: fd });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `Restore failed (${res.status})`);
+      setMsg(`Restored ${data.restored}, skipped ${data.skipped} of ${data.total}. Power them on to connect.`);
+      setImp({ pw: "", file: null });
+    } catch (e) { setErr(e.message); } finally { setBusy(""); }
+  };
+
+  return (
+    <section className="space-y-3 rounded-xl border bg-card p-4">
+      <h2 className="font-medium">Backup</h2>
+      <p className="text-xs text-muted-foreground">An encrypted archive of every account (sessions + 2FA). The password can't be recovered — keep it safe.</p>
+      <div className="flex gap-2">
+        <input
+          type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="Backup password (min 8)"
+          className="h-10 flex-1 rounded-lg border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+        />
+        <button type="button" onClick={exportNow} disabled={busy === "exp"} className="h-10 shrink-0 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50">
+          {busy === "exp" ? "Exporting…" : "Export backup"}
+        </button>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <input type="file" accept=".tgpbak" onChange={(e) => setImp((s) => ({ ...s, file: e.target.files?.[0] ?? null }))} className="min-w-0 flex-1 text-sm" />
+        <input
+          type="password" value={imp.pw} onChange={(e) => setImp((s) => ({ ...s, pw: e.target.value }))} placeholder="Backup password"
+          className="h-10 rounded-lg border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+        />
+        <button type="button" onClick={restore} disabled={!imp.file || !imp.pw || busy === "imp"} className="h-10 shrink-0 rounded-lg border px-3 text-sm font-medium disabled:opacity-50">
+          {busy === "imp" ? "Restoring…" : "Restore"}
+        </button>
+      </div>
+      {msg && <p className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{msg}</p>}
+      {err && <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{err}</p>}
+    </section>
   );
 }

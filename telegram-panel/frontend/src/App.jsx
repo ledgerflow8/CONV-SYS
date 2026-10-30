@@ -53,10 +53,33 @@ export default function App() {
   const Page = PAGES[path] ?? PAGES["/accounts"];
   return (
     <div className="min-h-dvh bg-muted/40">
+      <GlobalBanner />
       <main className="mx-auto w-full max-w-2xl px-4 pt-6 pb-28">
         <Page />
       </main>
       <Drawer items={NAV} path={path} onLogout={logout} />
+    </div>
+  );
+}
+
+// Site-wide alerts (every page), so a depleted-credits / failing-sync state can't be missed.
+function GlobalBanner() {
+  const [status, setStatus] = useState(null);
+  useEffect(() => {
+    const load = () => api("/api/system/status").then(setStatus).catch(() => {});
+    load();
+    const t = setInterval(() => document.visibilityState === "visible" && load(), 15000);
+    return () => clearInterval(t);
+  }, []);
+  const msgs = [];
+  if (status?.ai?.credit_over_until) msgs.push("Capitalbot AI credits are depleted — AI replies are paused. They resume automatically when credits return.");
+  if (status?.portal && (status.portal.failed > 0 || status.portal.last_error)) msgs.push("Portal sync is failing — see Status.");
+  if (!msgs.length) return null;
+  return (
+    <div className="sticky top-0 z-40 space-y-px">
+      {msgs.map((m) => (
+        <p key={m} role="alert" className="bg-destructive px-4 py-2 text-center text-sm font-medium text-white">{m}</p>
+      ))}
     </div>
   );
 }

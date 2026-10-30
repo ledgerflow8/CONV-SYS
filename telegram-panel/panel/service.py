@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from panel import portal
 from panel.accounts import AccountManager
-from panel.crypto import Crypto
+from panel.crypto import Crypto, InvalidToken
 from panel.models import Account, Activity, Chat, Lead, Message, Profile, utcnow
 from panel.tg.client import AccountInfo, ConnectParams, IncomingMessage, TgError
 
@@ -21,6 +21,8 @@ from panel.tg.client import AccountInfo, ConnectParams, IncomingMessage, TgError
 _PORTAL_STATUS = {"online": "online", "offline": "offline", "limited": "limited", "banned": "banned", "revoked": "revoked", "frozen": "frozen", "error": "offline"}
 
 RECONNECTING_DETAIL = "Reconnecting to Telegram…"  # friendly card text; never the raw exception
+UNDECRYPTABLE_DETAIL = "Can't decrypt the saved session — PANEL_ENC_KEY may have changed."
+ONLINE_REFRESH_SEC = 240  # Telegram keeps "online" for ~5 min; refresh before it lapses to "last seen"
 
 
 def _later(a: datetime | None, b: datetime | None) -> datetime | None:
@@ -296,6 +298,84 @@ class Service:
                 await session.commit()
             return made
 
+    # ── encrypted backup / restore (PLAN.md §10) ────────────────────────────
+    def _safe_decrypt(self, token: bytes | None) -> str | None:
+        if not token:
+            return None
+        try:
+            return self.crypto.decrypt(token)
+        except InvalidToken:
+            return None
+
+    async def export_backup(self, password: str) -> bytes:
+        """A password-encrypted archive of every account's secrets + metadata, restorable onto a
+        fresh panel. Secrets are decrypted here and re-encrypted under the owner's backup password."""
+        from panel import backup
+
+        async with self.sessionmaker() as session:
+            rows = (await session.scalars(select(Account).order_by(Account.id))).all()
+            accounts = []
+            for a in rows:
+                try:
+                    session_str = self.crypto.decrypt(a.session_enc)
+                except InvalidToken:
+                    continue  # can't decrypt its session → nothing useful to back up
+                accounts.append(
+                    {
+                        "tg_user_id": a.tg_user_id, "username": a.username, "phone": a.phone, "first_name": a.first_name,
+                        "session": session_str, "twofa": self._safe_decrypt(a.twofa_enc), "proxy": self._safe_decrypt(a.proxy_enc),
+                        "api_id": a.api_id, "api_hash": a.api_hash, "device_model": a.device_model,
+                        "system_version": a.system_version, "app_version": a.app_version,
+                        "lang_code": a.lang_code, "system_lang_code": a.system_lang_code,
+                        "power_on": a.power_on, "ai_on": a.ai_on,
+                    }
+                )
+        return backup.export_archive(accounts, password)
+
+    async def restore_backup(self, blob: bytes, password: str) -> dict:
+        """Insert accounts from a backup archive (re-encrypting under this panel's PANEL_ENC_KEY).
+        Restored accounts come in powered off, so the owner connects them in a controlled way.
+        Raises backup.BackupError on a bad password / malformed file."""
+        from panel import backup
+        from panel.tg.sessions import key_sha256_of
+
+        accounts = backup.import_archive(blob, password)
+        restored = skipped = 0
+        async with self.sessionmaker() as session:
+            for a in accounts:
+                session_str = a.get("session")
+                api_id = a.get("api_id") or self.default_api_id
+                api_hash = a.get("api_hash") or self.default_api_hash
+                if not session_str or not a.get("tg_user_id") or not (api_id and api_hash):
+                    skipped += 1
+                    continue
+                try:
+                    key_hash = key_sha256_of(session_str)
+                except Exception:
+                    skipped += 1
+                    continue
+                dup = await session.scalar(
+                    select(Account).where((Account.auth_key_sha256 == key_hash) | (Account.tg_user_id == a["tg_user_id"]))
+                )
+                if dup is not None:
+                    skipped += 1
+                    continue
+                session.add(
+                    Account(
+                        tg_user_id=a["tg_user_id"], username=a.get("username"), phone=a.get("phone"), first_name=a.get("first_name"),
+                        session_enc=self.crypto.encrypt(session_str), auth_key_sha256=key_hash,
+                        api_id=api_id, api_hash=api_hash, device_model=a.get("device_model"),
+                        system_version=a.get("system_version"), app_version=a.get("app_version"),
+                        lang_code=a.get("lang_code"), system_lang_code=a.get("system_lang_code"),
+                        twofa_enc=self.crypto.encrypt(a["twofa"]) if a.get("twofa") else None,
+                        proxy_enc=self.crypto.encrypt(a["proxy"]) if a.get("proxy") else None,
+                        power_on=False, ai_on=bool(a.get("ai_on")), status="offline",
+                    )
+                )
+                restored += 1
+            await session.commit()
+        return {"restored": restored, "skipped": skipped, "total": len(accounts)}
+
     async def _enqueue_status(self, session: AsyncSession, acc: Account) -> None:
         portal_status = _PORTAL_STATUS.get(acc.status)
         if portal_status is None:
@@ -372,7 +452,15 @@ class Service:
                     acc = await session.get(Account, account_id)
                     if acc is None or not acc.power_on or acc.status in ("banned", "revoked", "frozen"):
                         return  # someone powered it off / deleted it, or it's terminal
-                    params = self.connect_params(acc)
+                    try:
+                        params = self.connect_params(acc)
+                    except InvalidToken:
+                        undecryptable = True
+                    else:
+                        undecryptable = False
+                if undecryptable:
+                    await self._mark_undecryptable(account_id)
+                    return  # a PANEL_ENC_KEY mismatch won't fix itself; stop retrying this account
                 if self.manager.is_connected(account_id):
                     return  # a manual power-on got there first
                 try:
@@ -440,15 +528,49 @@ class Service:
                     await session.commit()
 
     # ── lifecycle (step 5 adds the health loop; step 0/1 need startup connect) ──
+    async def _mark_undecryptable(self, account_id: int) -> None:
+        """A stored secret won't decrypt (almost always a changed/missing PANEL_ENC_KEY). Surface it
+        on the card instead of crashing the whole startup, and don't keep retrying — a key mismatch
+        won't fix itself."""
+        log.error("cannot decrypt stored secrets for account=%s — PANEL_ENC_KEY mismatch?", account_id)
+        async with self.sessionmaker() as session:
+            await self.log_activity(session, "error", "connect_failed", UNDECRYPTABLE_DETAIL, account_id)
+            await session.commit()
+        await self._mark_status(account_id, "error", UNDECRYPTABLE_DETAIL)
+
+    async def keep_online_loop(self) -> None:
+        """Periodically tell Telegram every connected account is online, so profiles show 'online'
+        instead of a stale 'last seen'. Best-effort: one account's failure never stops the rest."""
+        while True:
+            try:
+                for account_id, client in self.manager.connected_items():
+                    try:
+                        await client.set_online()
+                    except Exception:
+                        log.debug("set_online failed for account=%s", account_id)
+                    await asyncio.sleep(0.2)  # gentle stagger across accounts
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("keep-online loop iteration failed")
+            await asyncio.sleep(ONLINE_REFRESH_SEC)
+
     async def connect_powered_on(self) -> None:
         """On startup, connect accounts whose power is on. Staggered, so a batch doesn't look
-        like a login flood from one IP."""
+        like a login flood from one IP. One account that can't be decrypted or connected must never
+        stop the others — a single undecryptable session used to abort the entire startup here."""
         async with self.sessionmaker() as session:
             rows = (await session.scalars(select(Account).where(Account.power_on.is_(True)))).all()
-            # Reconnect everything powered on — including accounts parked offline/error by an earlier
-            # drop (e.g. a newer-layer update) — but leave banned/revoked/frozen alone.
-            targets = [(a.id, self.connect_params(a)) for a in rows if a.status not in ("banned", "revoked", "frozen")]
-        for account_id, params in targets:
+        # Reconnect everything powered on — including accounts parked offline/error by an earlier
+        # drop (e.g. a newer-layer update) — but leave banned/revoked/frozen alone.
+        targets = [a for a in rows if a.status not in ("banned", "revoked", "frozen")]
+        for acc in targets:
+            account_id = acc.id
+            try:
+                params = self.connect_params(acc)  # decrypt here, guarded, not in a comprehension
+            except InvalidToken:
+                await self._mark_undecryptable(account_id)
+                continue
             try:
                 info = await self.manager.connect(account_id, params, self.on_drop(), self.message_cb(account_id))
                 await self._mark_online(account_id, info)

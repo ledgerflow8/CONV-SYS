@@ -9,3 +9,4 @@ argon2-cffi
 itsdangerous
 telethon==1.45.0  # newest on PyPI (layer 229); unreadable newer-layer updates are handled by auto-reconnect in service.py, not a version bump
 python-multipart
+phonenumbers  # our own Tier-1 country filter (tier.py); imported lazily, degrades gracefully if missing

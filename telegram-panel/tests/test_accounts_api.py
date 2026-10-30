@@ -83,11 +83,12 @@ def test_duplicate_in_same_batch_added_once(client, directory):
     k = key(12)
     sess = string_session(k)
     directory.add(sess, FakeAccount(AccountInfo(222, "bob", "+1", "B")))
-    # Same auth key twice, different file names.
+    # The same session file twice (common in supplier zips that keep an all_sessions/ copy): collect()
+    # dedupes identical bytes up front, so only one candidate is tested and the account is added once.
     r = _upload(client, [("bob.session", telethon_session_bytes(k)), ("bob-copy.session", telethon_session_bytes(k))])
     job = _wait_done(client, r.json()["job_id"])
     results = sorted(x["result"] for x in job["results"])
-    assert results == ["connected", "duplicate"]
+    assert results == ["connected"]
     assert client.get("/api/accounts").json()["counts"]["all"] == 1
 
 

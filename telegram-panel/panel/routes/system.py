@@ -3,11 +3,13 @@
 import asyncio
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 
 from panel.auth import require_login
+from panel.backup import BackupError
 from panel.db import get_setting, set_setting
 from panel.housekeeping import compact, disk_usage
 from panel.recovery import RecoveryJob, recover
@@ -181,6 +183,45 @@ async def patch_settings(body: SettingsBody, request: Request) -> dict:
         return {"settings": {key: await get_setting(session, key, default) for key, (default, _lo, _hi) in SETTINGS.items()}}
 
 
+# ── our own Tier-1 country filter (PLAN.md §10) ──────────────────────────────
+class TierBody(BaseModel):
+    only: bool | None = None
+    hidden: str | None = None  # "ai" (let the AI's tier check decide) | "skip" (don't reply)
+    countries: list[str] | None = None
+
+
+async def _tier_settings(session) -> dict:
+    return {
+        "only": bool(await get_setting(session, "tier1_only", False)),
+        "hidden": await get_setting(session, "tier1_hidden", "ai"),
+        "countries": await get_setting(session, "tier1_countries", None) or list(tier.DEFAULT_TIER1),
+    }
+
+
+@router.get("/tier")
+async def get_tier(request: Request) -> dict:
+    async with _service(request).sessionmaker() as session:
+        return {"tier": await _tier_settings(session)}
+
+
+@router.patch("/tier")
+async def patch_tier(body: TierBody, request: Request) -> dict:
+    async with _service(request).sessionmaker() as session:
+        if body.only is not None:
+            await set_setting(session, "tier1_only", bool(body.only))
+        if body.hidden is not None:
+            if body.hidden not in ("ai", "skip"):
+                raise HTTPException(400, "hidden must be 'ai' or 'skip'.")
+            await set_setting(session, "tier1_hidden", body.hidden)
+        if body.countries is not None:
+            codes = [c.strip().upper() for c in body.countries if c and c.strip()]
+            if any(len(c) != 2 or not c.isalpha() for c in codes):
+                raise HTTPException(400, "Countries must be ISO-2 codes, e.g. US, GB.")
+            await set_setting(session, "tier1_countries", sorted(set(codes)))
+        await session.commit()
+        return {"tier": await _tier_settings(session)}
+
+
 @router.get("/activity")
 async def activity(request: Request) -> dict:
     service = _service(request)
@@ -205,3 +246,30 @@ async def retry_failed(request: Request) -> dict:
         )
         await session.commit()
     return {"requeued": result.rowcount}
+
+
+# ── encrypted backup / restore (PLAN.md §10) ─────────────────────────────────
+class BackupBody(BaseModel):
+    password: str = Field(min_length=8, max_length=256)
+
+
+@router.post("/backup/export")
+async def backup_export(body: BackupBody, request: Request) -> StreamingResponse:
+    blob = await _service(request).export_backup(body.password)
+    filename = f"panel-backup-{datetime.now(timezone.utc):%Y%m%d-%H%M}.tgpbak"
+    return StreamingResponse(
+        iter([blob]),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/backup/import")
+async def backup_import(request: Request, password: str = Form(...), file: UploadFile = File(...)) -> dict:
+    blob = await file.read()
+    if len(blob) > 100 * 1024 * 1024:
+        raise HTTPException(413, "That backup file is too large.")
+    try:
+        return await _service(request).restore_backup(blob, password)
+    except BackupError as e:
+        raise HTTPException(400, str(e)) from e
