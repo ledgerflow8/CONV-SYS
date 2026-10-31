@@ -466,38 +466,35 @@ export default function Status() {
   );
 }
 
+const ONLINE_PRIVACY = { last_seen: "everybody", profile_photo: "everybody" };
+
 function BulkActions() {
   const [busy, setBusy] = useState("");
-  const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
+  const [result, setResult] = useState(null); // { kind, results }
   const [confirming, setConfirming] = useState(false);
 
-  const summarize = (results) => {
-    const ok = results.filter((r) => r.ok).length;
-    return `${ok} of ${results.length} done` + (ok < results.length ? ` · ${results.length - ok} failed (not connected / Telegram error)` : "");
-  };
-
-  const applyPrivacy = async () => {
-    setBusy("priv"); setErr(""); setMsg("");
+  const call = async (kind, ids) => {
+    setBusy(kind); setErr("");
     try {
-      const r = await api("/api/accounts/bulk/privacy", { method: "POST", body: { all: true, rules: { last_seen: "everybody", profile_photo: "everybody" } } });
-      setMsg("Privacy (online defaults): " + summarize(r.results));
-    } catch (e) { setErr(e.message); } finally { setBusy(""); }
-  };
-
-  const cleanAll = async () => {
-    setBusy("clean"); setErr(""); setMsg("");
-    try {
-      const r = await api("/api/accounts/bulk/clean-profile", { method: "POST", body: { all: true } });
-      setMsg("Clean profiles: " + summarize(r.results));
+      const body = kind === "priv"
+        ? (ids ? { account_ids: ids, rules: ONLINE_PRIVACY } : { all: true, rules: ONLINE_PRIVACY })
+        : (ids ? { account_ids: ids } : { all: true });
+      const path = kind === "priv" ? "/api/accounts/bulk/privacy" : "/api/accounts/bulk/clean-profile";
+      const r = await api(path, { method: "POST", body });
+      setResult({ kind, results: r.results });
       setConfirming(false);
     } catch (e) { setErr(e.message); } finally { setBusy(""); }
   };
 
+  const failed = result ? result.results.filter((r) => !r.ok) : [];
+  const okCount = result ? result.results.length - failed.length : 0;
+  const label = result?.kind === "priv" ? "Privacy (online defaults)" : "Clean profiles";
+
   return (
     <section className="space-y-3 rounded-xl border bg-card p-4">
       <h2 className="font-medium">Bulk account actions</h2>
-      <button type="button" onClick={applyPrivacy} disabled={!!busy} className="h-10 w-full rounded-lg border font-medium disabled:opacity-50">
+      <button type="button" onClick={() => call("priv")} disabled={!!busy} className="h-10 w-full rounded-lg border font-medium disabled:opacity-50">
         {busy === "priv" ? "Applying…" : "Apply online privacy to all accounts"}
       </button>
       {!confirming ? (
@@ -509,13 +506,41 @@ function BulkActions() {
           <p className="text-sm">Permanently delete every story and profile song on <b>all connected accounts</b>?</p>
           <div className="flex gap-2">
             <button type="button" onClick={() => setConfirming(false)} className="h-10 flex-1 rounded-lg border font-medium">Cancel</button>
-            <button type="button" onClick={cleanAll} disabled={busy === "clean"} className="h-10 flex-1 rounded-lg bg-destructive font-medium text-white disabled:opacity-50">
+            <button type="button" onClick={() => call("clean")} disabled={busy === "clean"} className="h-10 flex-1 rounded-lg bg-destructive font-medium text-white disabled:opacity-50">
               {busy === "clean" ? "Cleaning…" : "Clean all"}
             </button>
           </div>
         </div>
       )}
-      {msg && <p className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{msg}</p>}
+
+      {result && (
+        <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
+          <p className="text-sm font-medium">
+            {label}: {okCount} of {result.results.length} done
+            {failed.length > 0 && <span className="text-destructive"> · {failed.length} failed</span>}
+          </p>
+          {failed.length > 0 && (
+            <>
+              <ul className="max-h-48 space-y-1 overflow-auto text-sm">
+                {failed.map((r) => (
+                  <li key={r.account_id} className="flex justify-between gap-3">
+                    <span className="shrink-0 font-medium">@{r.username ?? r.account_id}</span>
+                    <span className="truncate text-right text-destructive" title={r.error}>{r.error}</span>
+                  </li>
+                ))}
+              </ul>
+              <button
+                type="button"
+                onClick={() => call(result.kind, failed.map((r) => r.account_id))}
+                disabled={!!busy}
+                className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50"
+              >
+                <RefreshCw className={`size-4 ${busy ? "animate-spin" : ""}`} /> Retry failed ({failed.length})
+              </button>
+            </>
+          )}
+        </div>
+      )}
       {err && <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{err}</p>}
     </section>
   );

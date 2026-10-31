@@ -599,8 +599,10 @@ async def _bulk(service, account_ids: list[int], action, *, gap: float = 0.0) ->
             await action(service, account_id)
             results.append({"account_id": account_id, "username": username, "ok": True})
         except HTTPException as e:
+            log.warning("bulk action failed for account=%s (@%s): %s", account_id, username, e.detail)
             results.append({"account_id": account_id, "username": username, "ok": False, "error": e.detail})
         except TgError as e:
+            log.warning("bulk action failed for account=%s (@%s): %s", account_id, username, e.detail)
             results.append({"account_id": account_id, "username": username, "ok": False, "error": e.detail})
     return results
 

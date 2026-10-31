@@ -122,6 +122,24 @@ def test_hidden_phone_default_lets_capitalbot_decide(client, directory):
     assert len(client.app.state.ai.capital.calls) == 1
 
 
+def test_app_starts_with_flag_on_and_portal_unreachable(directory, tmp_path):
+    # Regression: startup must bind the port without blocking on Telegram/portal. The lifespan runs
+    # inside this `with`; if it blocked, the test would hang. The portal is configured but points at
+    # an unreachable host, and the flag is on.
+    settings = make_settings(
+        tmp_path,
+        phone_filter_enabled=True,
+        portal_ingest_url="https://127.0.0.1:9/api/ingest/convo",
+        portal_ingest_api_key="k",
+        portal_ingest_hmac_secret="s",
+    )
+    app = create_app(settings, dist=tmp_path / "x", client_factory=directory.factory)
+    with TestClient(app, base_url="https://panel.example.com") as c:
+        set_password(c)
+        c.post("/api/auth/login", json={"password": PASSWORD}, headers=H)
+        assert c.get("/api/auth/me", headers=H).status_code == 200  # app came up and serves
+
+
 def test_feature_flag_off_disables_filtering_and_hides_settings(directory, tmp_path, monkeypatch):
     monkeypatch.setattr(tier, "country_for_phone", lambda p: "JM" if p else None)
     c = _app(directory, tmp_path, flag=False)  # PHONE_FILTER_ENABLED=false

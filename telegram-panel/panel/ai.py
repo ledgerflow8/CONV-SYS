@@ -246,7 +246,9 @@ class AiEngine:
                 enabled = bool(override["only"])
             if override.get("hidden"):
                 hidden = override["hidden"]
-        country = tier.country_for_phone(chat.peer_phone)
+        # phonenumbers' metadata parsing is synchronous CPU work; keep it off the event loop so a
+        # burst of turns at startup can't stall the process.
+        country = await asyncio.to_thread(tier.country_for_phone, chat.peer_phone)
         return tier.tier_decision(country, enabled=enabled, hidden_mode=hidden, tier1=list(tier1))
 
     def _pick_fan_media(self, msgs: list[Message], out_before: datetime | None) -> Message | None:

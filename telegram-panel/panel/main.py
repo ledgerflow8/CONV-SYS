@@ -4,6 +4,7 @@ Run with exactly one worker: uvicorn --factory panel.main:create_app --workers 1
 """
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -31,6 +32,7 @@ from panel.routes import system as system_routes
 from panel.service import Service
 from panel.tg.client import ClientFactory, telethon_factory
 
+log = logging.getLogger("panel.main")
 DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 CSP = (
@@ -78,8 +80,20 @@ def create_app(settings: Settings | None = None, dist: Path = DIST, client_facto
             engine_ai.report_ai_outcome = app.state.service.report_ai_outcome
             app.state.service.ai = engine_ai
             app.state.ai = engine_ai
-            await app.state.service.backfill_leads()  # one-time (idempotent): leads from already-converted chats
-            await app.state.service.connect_powered_on()
+            # Startup must bind the port immediately — never block the lifespan on Telegram/DB
+            # catch-up. The lead backfill and connecting ~100 accounts (staggered, minutes long)
+            # run in the background so uvicorn can start serving right away.
+            async def _deferred_startup(service):
+                try:
+                    await service.backfill_leads()  # one-time (idempotent): leads from converted chats
+                except Exception:
+                    log.exception("lead backfill failed")
+                try:
+                    await service.connect_powered_on()
+                except Exception:
+                    log.exception("startup connect failed")
+
+            app.state.background.add(asyncio.create_task(_deferred_startup(app.state.service)))
             app.state.background.add(asyncio.create_task(worker.run()))
             app.state.background.add(asyncio.create_task(app.state.service.keep_online_loop()))
             # Keeps DATA_DIR bounded: prunes old rows, sweeps leftover media, checkpoints the WAL.
@@ -91,10 +105,13 @@ def create_app(settings: Settings | None = None, dist: Path = DIST, client_facto
                 yield
             finally:
                 await app.state.service.cancel_all_reconnects()  # stop background retries first
-                await manager.shutdown()  # disconnect every client; never log out
-                await engine_ai.shutdown()
+                # Cancel AND drain the background tasks (incl. the deferred startup) so any in-flight
+                # DB session unwinds before engine.dispose(), otherwise teardown can hang on it.
                 for task in list(app.state.background):
                     task.cancel()
+                await asyncio.gather(*app.state.background, return_exceptions=True)
+                await manager.shutdown()  # disconnect every client; never log out
+                await engine_ai.shutdown()
                 await http.aclose()
         finally:
             await engine.dispose()
