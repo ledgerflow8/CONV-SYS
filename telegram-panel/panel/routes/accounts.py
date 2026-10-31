@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 import tempfile
@@ -14,7 +15,7 @@ from panel.capital import ALLOWED_OVERRIDE_KEYS
 from panel.db import get_setting
 from panel.health import health_color
 from panel.models import Account, Chat, Profile, utcnow
-from panel.tg.client import TgError
+from panel.tg.client import PRIVACY_KEYS, PRIVACY_RULES, TgError
 
 router = APIRouter(prefix="/api/accounts", dependencies=[Depends(require_login)])
 
@@ -583,9 +584,11 @@ async def set_account_2fa(account_id: int, body: TwoFaBody, request: Request) ->
     return {"ok": True, "password": body.new_password}  # shown once so the owner can copy it
 
 
-async def _bulk(service, account_ids: list[int], action) -> list[dict]:
+async def _bulk(service, account_ids: list[int], action, *, gap: float = 0.0) -> list[dict]:
     results = []
-    for account_id in account_ids:
+    for i, account_id in enumerate(account_ids):
+        if i and gap:
+            await asyncio.sleep(gap)  # stagger Telegram calls across accounts to stay clear of floods
         async with service.sessionmaker() as session:
             acc = await session.get(Account, account_id)
         username = acc.username if acc else None
@@ -615,6 +618,106 @@ async def bulk_set_2fa(body: BulkTwoFaBody, request: Request) -> dict:
 
     results = await _bulk(_service(request), body.account_ids, action)
     return {"results": results}
+
+
+# ── privacy + clean profile (per-account + bulk) ─────────────────────────────
+def _valid_privacy(rules: dict) -> dict:
+    if not rules:
+        raise HTTPException(400, "No privacy settings given.")
+    for name, value in rules.items():
+        if name not in PRIVACY_KEYS or value not in PRIVACY_RULES:
+            raise HTTPException(400, f"Unknown privacy setting {name}={value}.")
+    return dict(rules)
+
+
+class PrivacyBody(BaseModel):
+    rules: dict[str, str]
+
+
+class BulkPrivacyBody(BaseModel):
+    account_ids: list[int] | None = None
+    all: bool = False
+    rules: dict[str, str]
+
+
+class BulkCleanBody(BaseModel):
+    account_ids: list[int] | None = None
+    all: bool = False
+
+
+async def _resolve_targets(service, account_ids: list[int] | None, all_: bool) -> list[int]:
+    if all_:
+        async with service.sessionmaker() as session:
+            return [a for (a,) in (await session.execute(select(Account.id).order_by(Account.id))).all()]
+    return account_ids or []
+
+
+# Bulk routes are registered before the /{account_id}/… ones so "bulk" isn't parsed as an id.
+@router.post("/bulk/privacy")
+async def bulk_privacy(body: BulkPrivacyBody, request: Request) -> dict:
+    rules = _valid_privacy(body.rules)
+    service = _service(request)
+    ids = await _resolve_targets(service, body.account_ids, body.all)
+
+    async def action(svc, account_id):
+        await _require_connected(svc, account_id).set_privacy(rules)
+
+    return {"results": await _bulk(service, ids, action, gap=0.3)}
+
+
+@router.post("/bulk/clean-profile")
+async def bulk_clean_profile(body: BulkCleanBody, request: Request) -> dict:
+    service = _service(request)
+    ids = await _resolve_targets(service, body.account_ids, body.all)
+
+    async def action(svc, account_id):
+        client = _require_connected(svc, account_id)
+        await client.delete_all_stories()
+        await client.remove_profile_music()
+
+    return {"results": await _bulk(service, ids, action, gap=0.3)}
+
+
+@router.get("/{account_id}/privacy")
+async def get_privacy(account_id: int, request: Request) -> dict:
+    client = _require_connected(_service(request), account_id)
+    try:
+        return {"privacy": await client.get_privacy()}
+    except TgError as e:
+        raise _tg_http(e) from e
+
+
+@router.post("/{account_id}/privacy")
+async def set_privacy(account_id: int, body: PrivacyBody, request: Request) -> dict:
+    rules = _valid_privacy(body.rules)
+    service = _service(request)
+    client = _require_connected(service, account_id)
+    try:
+        await client.set_privacy(rules)
+    except TgError as e:
+        raise _tg_http(e) from e
+    async with service.sessionmaker() as session:
+        await service.log_activity(session, "info", "privacy_set", "privacy updated: " + ", ".join(f"{k}={v}" for k, v in rules.items()), account_id)
+        await session.commit()
+    try:
+        return {"ok": True, "privacy": await client.get_privacy()}
+    except TgError:
+        return {"ok": True, "privacy": None}
+
+
+@router.post("/{account_id}/clean-profile")
+async def clean_profile(account_id: int, request: Request) -> dict:
+    service = _service(request)
+    client = _require_connected(service, account_id)
+    try:
+        stories = await client.delete_all_stories()
+        music = await client.remove_profile_music()
+    except TgError as e:
+        raise _tg_http(e) from e
+    async with service.sessionmaker() as session:
+        await service.log_activity(session, "info", "profile_cleaned", f"deleted {stories} stories, removed {music} profile songs", account_id)
+        await session.commit()
+    return {"ok": True, "stories_deleted": stories, "music_removed": music}
 
 
 @router.get("/{account_id}/avatar")

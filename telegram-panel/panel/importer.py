@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from panel.collect import Candidate
 from panel.models import Account, ImportItem, ImportJob, utcnow
 from panel.service import Service
-from panel.tg.client import TgError
+from panel.tg.client import PRIVACY_ONLINE_DEFAULTS, TgError
 from panel.tg.meta import AccountMeta, parse_meta
 from panel.tg.sessions import ParsedSession, SessionFileError, parse_session
 
@@ -133,6 +133,10 @@ async def _process_one(service: Service, item_id: int, cand: Candidate) -> None:
         await session.commit()
 
     await service.manager.adopt(account_id, client, service.on_drop(), service.message_cb(account_id))
+    try:
+        await client.set_privacy(PRIVACY_ONLINE_DEFAULTS)  # Last seen & Profile photo = Everybody
+    except Exception:
+        log.warning("couldn't apply privacy defaults on import for account=%s", account_id)
     asyncio.create_task(service.refresh_avatar(account_id))
 
 

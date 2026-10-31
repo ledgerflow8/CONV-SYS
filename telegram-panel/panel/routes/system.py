@@ -15,7 +15,7 @@ from panel.db import get_setting, set_setting
 from panel.housekeeping import compact, disk_usage
 from panel.recovery import RecoveryJob, recover
 from panel.models import Activity, OutboxItem, utcnow
-from panel.portal import LAST_ERROR_KEY, LAST_OK_KEY, outbox_counts
+from panel.portal import LAST_ERROR_KEY, LAST_OK_KEY, fetch_week_stats, outbox_counts
 
 router = APIRouter(prefix="/api/system", dependencies=[Depends(require_login)])
 
@@ -150,7 +150,9 @@ async def system_stats(request: Request) -> dict:
     if capital and capital.configured:
         for ours, theirs in (("today", "today"), ("week", "7days"), ("all", "all")):
             cap[ours] = await capital.statistics(theirs)
-    return {"panel": panel, "capital": cap}
+    # Authoritative current-week convo breakdown from the portal (Qualified matches the VA dashboard).
+    portal_week = await fetch_week_stats(request.app.state.http, request.app.state.outbox.config)
+    return {"panel": panel, "capital": cap, "portal_week": portal_week}
 
 
 class SettingsBody(BaseModel):

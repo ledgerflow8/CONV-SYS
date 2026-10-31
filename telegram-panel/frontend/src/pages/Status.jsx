@@ -316,6 +316,16 @@ export default function Status() {
       {stats && (
         <section className="space-y-3 rounded-xl border bg-card p-4">
           <h2 className="font-medium">Stats (all accounts)</h2>
+          {stats.portal_week?.counts && (
+            <div className="space-y-1">
+              <p className="text-xs text-muted-foreground">This week, from the portal (matches the VA dashboard)</p>
+              <div className="grid grid-cols-3 gap-2">
+                <Stat label="Qualified" value={stats.portal_week.counts.qualified ?? 0} tone="text-emerald-600" />
+                <Stat label="Pending" value={stats.portal_week.counts.pending ?? 0} tone="text-amber-600" />
+                <Stat label="Rejected" value={stats.portal_week.counts.rejected ?? 0} tone="text-destructive" />
+              </div>
+            </div>
+          )}
           <StatsBlock stats={stats.panel} />
           {stats.capital && stats.capital.week && (
             <div className="grid grid-cols-3 gap-2">
@@ -428,6 +438,7 @@ export default function Status() {
         </section>
       )}
 
+      <BulkActions />
       <TierSettings />
       <Backup />
 
@@ -452,6 +463,61 @@ export default function Status() {
         )}
       </section>
     </div>
+  );
+}
+
+function BulkActions() {
+  const [busy, setBusy] = useState("");
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+  const [confirming, setConfirming] = useState(false);
+
+  const summarize = (results) => {
+    const ok = results.filter((r) => r.ok).length;
+    return `${ok} of ${results.length} done` + (ok < results.length ? ` · ${results.length - ok} failed (not connected / Telegram error)` : "");
+  };
+
+  const applyPrivacy = async () => {
+    setBusy("priv"); setErr(""); setMsg("");
+    try {
+      const r = await api("/api/accounts/bulk/privacy", { method: "POST", body: { all: true, rules: { last_seen: "everybody", profile_photo: "everybody" } } });
+      setMsg("Privacy (online defaults): " + summarize(r.results));
+    } catch (e) { setErr(e.message); } finally { setBusy(""); }
+  };
+
+  const cleanAll = async () => {
+    setBusy("clean"); setErr(""); setMsg("");
+    try {
+      const r = await api("/api/accounts/bulk/clean-profile", { method: "POST", body: { all: true } });
+      setMsg("Clean profiles: " + summarize(r.results));
+      setConfirming(false);
+    } catch (e) { setErr(e.message); } finally { setBusy(""); }
+  };
+
+  return (
+    <section className="space-y-3 rounded-xl border bg-card p-4">
+      <h2 className="font-medium">Bulk account actions</h2>
+      <button type="button" onClick={applyPrivacy} disabled={!!busy} className="h-10 w-full rounded-lg border font-medium disabled:opacity-50">
+        {busy === "priv" ? "Applying…" : "Apply online privacy to all accounts"}
+      </button>
+      {!confirming ? (
+        <button type="button" onClick={() => setConfirming(true)} disabled={!!busy} className="h-10 w-full rounded-lg border border-destructive/40 font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50">
+          Clean all profiles (stories &amp; songs)
+        </button>
+      ) : (
+        <div className="space-y-2 rounded-lg border border-destructive/40 p-3">
+          <p className="text-sm">Permanently delete every story and profile song on <b>all connected accounts</b>?</p>
+          <div className="flex gap-2">
+            <button type="button" onClick={() => setConfirming(false)} className="h-10 flex-1 rounded-lg border font-medium">Cancel</button>
+            <button type="button" onClick={cleanAll} disabled={busy === "clean"} className="h-10 flex-1 rounded-lg bg-destructive font-medium text-white disabled:opacity-50">
+              {busy === "clean" ? "Cleaning…" : "Clean all"}
+            </button>
+          </div>
+        </div>
+      )}
+      {msg && <p className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{msg}</p>}
+      {err && <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{err}</p>}
+    </section>
   );
 }
 

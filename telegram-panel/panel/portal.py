@@ -53,6 +53,11 @@ class PortalConfig:
         return (self.convo_url or "").rsplit("/", 1)[0] + "/account-status"
 
     @property
+    def stats_url(self) -> str:
+        # …/api/ingest/convo → …/api/ingest/stats (the portal's read-only week breakdown)
+        return (self.convo_url or "").rsplit("/", 1)[0] + "/stats"
+
+    @property
     def problem(self) -> str | None:
         """Why the outbox can't send, or None."""
         url = self.convo_url
@@ -72,6 +77,29 @@ class PortalConfig:
 
     def url_for(self, kind: str) -> str:
         return self.status_url if kind == "account_status" else (self.convo_url or "")
+
+
+async def fetch_week_stats(client: httpx.AsyncClient, config: PortalConfig) -> dict | None:
+    """The portal's authoritative current-week convo breakdown (Qualified/Pending/Rejected), so the
+    panel's 'this week' matches the VA dashboard. Signed GET (empty body). None if unconfigured/unreachable."""
+    if not config.configured:
+        return None
+    ts = str(int(time.time()))
+    headers = {
+        "Authorization": f"Bearer {config.api_key}",
+        "X-Timestamp": ts,
+        "X-Signature": sign_body(config.hmac_secret, ts, ""),  # HMAC over "<ts>." with an empty body
+    }
+    try:
+        resp = await client.get(config.stats_url, headers=headers, timeout=10)
+    except httpx.HTTPError:
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        return resp.json()
+    except ValueError:
+        return None
 
 
 # ── Event derivation (enqueue only; the worker signs and sends) ──────────────

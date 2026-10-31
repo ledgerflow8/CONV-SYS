@@ -30,6 +30,10 @@ class FakeAccount:
     # account security
     twofa: str | None = None  # the current 2FA password Telegram has, if any
     reset_too_fresh_until: datetime | None = None  # when set, terminate_other_sessions is forbidden until then
+    # privacy + profile cleanup
+    privacy: dict[str, str] | None = None  # overrides over the "everybody" defaults
+    stories: list[int] = field(default_factory=list)  # own story ids
+    music: list[int] = field(default_factory=list)  # saved-music doc ids
     # Full Telegram history per fan (peer id str → messages oldest first), for recovery scans.
     history: dict[str, list[IncomingMessage]] = field(default_factory=dict)
     scan_error: TgError | None = None  # raised by recent_peers (e.g. a long FloodWait)
@@ -53,6 +57,9 @@ class FakeClient:
         self.sessions_reset = 0
         self.twofa_set_to: str | None = None
         self.online_pings = 0
+        self.privacy_set: list[dict] = []
+        self.stories_deleted = 0
+        self.music_removed = 0
 
     async def start(self) -> AccountInfo:
         self._dir.started.append(self._params.session)
@@ -186,6 +193,31 @@ class FakeClient:
 
     async def set_online(self) -> None:
         self.online_pings += 1
+
+    async def get_privacy(self) -> dict:
+        base = {"last_seen": "everybody", "profile_photo": "everybody", "phone": "custom", "calls": "custom", "forwards": "custom"}
+        if self._fake and self._fake.privacy:
+            base.update(self._fake.privacy)
+        return base
+
+    async def set_privacy(self, rules: dict) -> None:
+        self.privacy_set.append(dict(rules))
+        if self._fake:
+            self._fake.privacy = {**(self._fake.privacy or {}), **rules}
+
+    async def delete_all_stories(self) -> int:
+        n = len(self._fake.stories) if self._fake else 0
+        if self._fake:
+            self._fake.stories = []
+        self.stories_deleted += n
+        return n
+
+    async def remove_profile_music(self) -> int:
+        n = len(self._fake.music) if self._fake else 0
+        if self._fake:
+            self._fake.music = []
+        self.music_removed += n
+        return n
 
     def on_private_message(self, cb) -> None:
         self._cb = cb

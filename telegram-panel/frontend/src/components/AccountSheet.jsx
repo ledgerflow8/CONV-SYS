@@ -12,6 +12,115 @@ const STATE_TONE = {
   filtered: "text-amber-600",
 };
 
+const PRIVACY_FIELDS = [
+  ["last_seen", "Last seen & online"],
+  ["profile_photo", "Profile photo"],
+  ["phone", "Phone number"],
+  ["calls", "Calls"],
+  ["forwards", "Forwarded messages"],
+];
+const PRIVACY_CHOICES = ["everybody", "contacts", "nobody"];
+
+function Privacy({ accountId, connected }) {
+  const [vals, setVals] = useState(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    if (!connected) return;
+    api(`/api/accounts/${accountId}/privacy`).then((r) => setVals(r.privacy)).catch((e) => setErr(e.message));
+  }, [accountId, connected]);
+
+  const save = async () => {
+    setBusy(true); setErr(""); setSaved(false);
+    try {
+      // Only send the settings we manage with a concrete value (skip "custom").
+      const rules = Object.fromEntries(PRIVACY_FIELDS.map(([k]) => [k, vals[k]]).filter(([, v]) => PRIVACY_CHOICES.includes(v)));
+      const r = await api(`/api/accounts/${accountId}/privacy`, { method: "POST", body: { rules } });
+      if (r.privacy) setVals(r.privacy);
+      setSaved(true);
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+
+  if (!connected) return (
+    <div className="space-y-2 border-t pt-4">
+      <h3 className="text-xs font-medium text-muted-foreground">Privacy</h3>
+      <p className="text-xs text-muted-foreground">Power the account on to view and edit privacy.</p>
+    </div>
+  );
+
+  return (
+    <div className="space-y-2 border-t pt-4">
+      <h3 className="text-xs font-medium text-muted-foreground">Privacy</h3>
+      {!vals ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : (
+        <>
+          {PRIVACY_FIELDS.map(([k, label]) => (
+            <label key={k} className="flex items-center justify-between gap-4 text-sm">
+              <span>{label}</span>
+              <select
+                value={vals[k]}
+                onChange={(e) => { setVals((v) => ({ ...v, [k]: e.target.value })); setSaved(false); }}
+                className="h-9 rounded-lg border bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+              >
+                {!PRIVACY_CHOICES.includes(vals[k]) && <option value={vals[k]}>custom</option>}
+                <option value="everybody">Everybody</option>
+                <option value="contacts">Contacts</option>
+                <option value="nobody">Nobody</option>
+              </select>
+            </label>
+          ))}
+          <button type="button" onClick={save} disabled={busy} className="h-10 w-full rounded-lg bg-primary font-medium text-primary-foreground disabled:opacity-50">
+            {busy ? "Saving…" : saved ? "Saved ✓" : "Save privacy"}
+          </button>
+        </>
+      )}
+      {err && <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{err}</p>}
+    </div>
+  );
+}
+
+function CleanProfile({ accountId, connected }) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+
+  const run = async () => {
+    setBusy(true); setErr(""); setMsg("");
+    try {
+      const r = await api(`/api/accounts/${accountId}/clean-profile`, { method: "POST" });
+      setMsg(`Deleted ${r.stories_deleted} stories, removed ${r.music_removed} profile songs.`);
+      setConfirming(false);
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="space-y-2 border-t pt-4">
+      <h3 className="text-xs font-medium text-muted-foreground">Clean profile</h3>
+      {!confirming ? (
+        <button type="button" disabled={!connected} onClick={() => setConfirming(true)} className="h-10 w-full rounded-lg border font-medium disabled:opacity-50">
+          Delete all stories &amp; profile songs
+        </button>
+      ) : (
+        <div className="space-y-2 rounded-lg border border-destructive/40 p-3">
+          <p className="text-sm">This permanently deletes every story (active, pinned and archived) and removes the songs shown on the profile.</p>
+          <div className="flex gap-2">
+            <button type="button" onClick={() => setConfirming(false)} className="h-10 flex-1 rounded-lg border font-medium">Cancel</button>
+            <button type="button" onClick={run} disabled={busy} className="h-10 flex-1 rounded-lg bg-destructive font-medium text-white disabled:opacity-50">
+              {busy ? "Cleaning…" : "Delete"}
+            </button>
+          </div>
+        </div>
+      )}
+      {msg && <p className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{msg}</p>}
+      {err && <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{err}</p>}
+    </div>
+  );
+}
+
 function Security({ accountId, connected }) {
   const [pw, setPw] = useState("");
   const [result, setResult] = useState("");
@@ -249,6 +358,8 @@ export default function AccountSheet({ accountId, onClose, onChanged }) {
             />
           </div>
 
+          <Privacy accountId={accountId} connected={acc.connected} />
+          <CleanProfile accountId={accountId} connected={acc.connected} />
           <Security accountId={accountId} connected={acc.connected} />
 
           {!confirming ? (
@@ -308,7 +419,7 @@ const PERIODS = [
 const METRICS = [
   ["new_chats", "New chats"],
   ["ai_replies", "AI replies"],
-  ["convos_reported", "Convos reported"],
+  ["convos_reported", "Replies reported"],
   ["converted", "Converted"],
 ];
 

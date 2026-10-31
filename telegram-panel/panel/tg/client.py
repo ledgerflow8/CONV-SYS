@@ -13,6 +13,23 @@ from telethon.sessions import StringSession
 
 TELEGRAM_SERVICE_ID = 777000  # login codes etc.; never a fan
 
+# Privacy settings we manage (logical name → Telethon key / value classes). "last_seen" is the
+# "Last seen & online" setting; "profile_photo" the profile picture; plus phone/calls/forwards.
+PRIVACY_KEYS = {
+    "last_seen": "InputPrivacyKeyStatusTimestamp",
+    "profile_photo": "InputPrivacyKeyProfilePhoto",
+    "phone": "InputPrivacyKeyPhoneNumber",
+    "calls": "InputPrivacyKeyPhoneCall",
+    "forwards": "InputPrivacyKeyForwards",
+}
+PRIVACY_RULES = {
+    "everybody": "InputPrivacyValueAllowAll",
+    "contacts": "InputPrivacyValueAllowContacts",
+    "nobody": "InputPrivacyValueDisallowAll",
+}
+# The defaults applied to every newly-imported account (and the "online" preset in the UI).
+PRIVACY_ONLINE_DEFAULTS = {"last_seen": "everybody", "profile_photo": "everybody"}
+
 # Telegram sometimes sends updates from a newer API layer than our Telethon understands. A single
 # such update is skipped by Telethon's receive loop, but one that lands in a getDifference response
 # makes Telethon tear the connection down (client/updates.py). We classify it as a transient error
@@ -182,6 +199,11 @@ class TgClient(Protocol):
     async def set_2fa(self, current_password: str | None, new_password: str) -> None: ...
     # Presence: tell Telegram the account is online (so it shows "online", not "last seen …").
     async def set_online(self) -> None: ...
+    # Privacy + profile cleanup.
+    async def get_privacy(self) -> dict[str, str]: ...
+    async def set_privacy(self, rules: dict[str, str]) -> None: ...
+    async def delete_all_stories(self) -> int: ...
+    async def remove_profile_music(self) -> int: ...
 
 
 ClientFactory = Callable[[ConnectParams], TgClient]
@@ -529,6 +551,77 @@ class TelethonClient:
             await self._c(functions.account.UpdateStatusRequest(offline=False))
         except Exception as e:
             raise classify(e) from e
+
+    # ── privacy + profile cleanup ────────────────────────────────────────────
+    @staticmethod
+    def _read_privacy_rules(rules: list) -> str:
+        names = {type(r).__name__ for r in rules}
+        if "PrivacyValueAllowAll" in names:
+            return "everybody"
+        if "PrivacyValueAllowContacts" in names:
+            return "contacts"
+        if "PrivacyValueDisallowAll" in names:
+            return "nobody"
+        return "custom"
+
+    async def get_privacy(self) -> dict[str, str]:
+        """Current value of each managed privacy setting: everybody / contacts / nobody / custom."""
+        out: dict[str, str] = {}
+        for name, key_cls in PRIVACY_KEYS.items():
+            try:
+                res = await self._c(functions.account.GetPrivacyRequest(key=getattr(types, key_cls)()))
+                out[name] = self._read_privacy_rules(res.rules)
+            except Exception:
+                out[name] = "custom"  # unknown/unsupported → don't guess
+        return out
+
+    async def set_privacy(self, rules: dict[str, str]) -> None:
+        """Apply privacy settings. Keys/values outside the managed sets are ignored."""
+        try:
+            for name, value in rules.items():
+                key_cls, rule_cls = PRIVACY_KEYS.get(name), PRIVACY_RULES.get(value)
+                if key_cls and rule_cls:
+                    await self._c(functions.account.SetPrivacyRequest(key=getattr(types, key_cls)(), rules=[getattr(types, rule_cls)()]))
+        except Exception as e:
+            raise classify(e) from e
+
+    async def delete_all_stories(self) -> int:
+        """Delete every own story — active, pinned and archived. Returns how many were deleted."""
+        me = types.InputPeerSelf()
+        ids: set[int] = set()
+        try:
+            for req in (functions.stories.GetPinnedStoriesRequest, functions.stories.GetStoriesArchiveRequest):
+                offset = 0
+                for _ in range(50):  # page cap, just in case
+                    res = await self._c(req(peer=me, offset_id=offset, limit=100))
+                    batch = list(getattr(res, "stories", []) or [])
+                    if not batch:
+                        break
+                    ids.update(s.id for s in batch)
+                    offset = batch[-1].id
+                    if len(batch) < 100:
+                        break
+            if ids:
+                await self._c(functions.stories.DeleteStoriesRequest(peer=me, id=sorted(ids)))
+        except Exception as e:
+            raise classify(e) from e
+        return len(ids)
+
+    async def remove_profile_music(self) -> int:
+        """Remove the music/songs shown on the profile. Returns how many were removed (best-effort:
+        Telegram returns only ids for saved music, so unsaving may not take on every build)."""
+        try:
+            res = await self._c(functions.account.GetSavedMusicIdsRequest(hash=0))
+        except Exception as e:
+            raise classify(e) from e
+        removed = 0
+        for doc_id in list(getattr(res, "ids", []) or []):
+            try:
+                await self._c(functions.account.SaveMusicRequest(id=types.InputDocument(id=doc_id, access_hash=0, file_reference=b""), unsave=True))
+                removed += 1
+            except Exception:
+                pass  # needs a full access-hash we don't have; leave it rather than fail the whole clean-up
+        return removed
 
     def on_private_message(self, cb: MessageCallback) -> None:
         async def handler(event: events.NewMessage.Event) -> None:
