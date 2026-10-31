@@ -78,6 +78,7 @@ def create_app(settings: Settings | None = None, dist: Path = DIST, client_facto
             engine_ai = AiEngine(sessionmaker, manager, capital, app.state.crypto, settings.data_dir, http, phone_filter_enabled=settings.phone_filter_enabled)
             engine_ai.service_record = app.state.service.record_ai_message
             engine_ai.report_ai_outcome = app.state.service.report_ai_outcome
+            engine_ai.resolve_country = app.state.service.resolve_peer_country
             app.state.service.ai = engine_ai
             app.state.ai = engine_ai
             # Startup must bind the port immediately — never block the lifespan on Telegram/DB

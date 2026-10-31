@@ -44,6 +44,8 @@ export const convoEventSchema = z
     // Capitalbot's tier verdict, sent only when the fan's phone is hidden: "T1" = a normal AI
     // reply (Tier 1, AI verified), "NON_T1" = tierFiltered (reject as non_tier1).
     tier: optional(z.enum(["T1", "NON_T1"])),
+    // ISO-2 country from Telegram's PeerSettings card, for a hidden number.
+    phoneCountry: optional(z.string().trim().regex(/^[A-Za-z]{2}$/).transform((s) => s.toUpperCase())),
   })
   .superRefine((e, ctx) => {
     // Runs even when a field already failed; only check dates that actually parsed.
@@ -177,6 +179,10 @@ async function ingestOnce(
   // countrySource CAPITALBOT) so a merge or Retry can't drop an AI-verified Tier 1.
   const priorAiTier = existing?.countrySource === "CAPITALBOT" ? (existing.country === AI_TIER1 ? "T1" : "NON_T1") : undefined;
   const aiTier = e.tier ?? priorAiTier ?? null;
+  // Telegram PeerSettings phone-country (hidden number). Like the AI tier, a later event may omit it;
+  // keep the one already applied (stored as countrySource TG_PHONE_COUNTRY).
+  const priorPhoneCountry = existing?.countrySource === "TG_PHONE_COUNTRY" ? existing.country : undefined;
+  const phoneCountry = (e.phoneCountry ?? priorPhoneCountry ?? null)?.toUpperCase() ?? null;
 
   // A decided convo never changes outcome: it counts exactly once.
   if (existing && isFinal(existing.status)) {
@@ -228,7 +234,12 @@ async function ingestOnce(
     country = click.country;
     countrySource = "CLICK";
   }
-  // Phone hidden and no matched click: fall back to Capitalbot's tier verdict (AI verified).
+  // Hidden number: Telegram's PeerSettings phone-country is a real ISO-2 and beats the AI's guess.
+  if (!country && phoneCountry) {
+    country = phoneCountry;
+    countrySource = "TG_PHONE_COUNTRY";
+  }
+  // Phone hidden and no matched click / PeerSettings country: fall back to Capitalbot's tier verdict.
   let aiNonTier1 = false;
   if (!country && aiTier === "T1") {
     country = AI_TIER1;
@@ -417,6 +428,7 @@ export async function retryConvo(actor: CurrentUser, convoId: string): Promise<R
       repliedAt: c.repliedAt?.toISOString(),
       source: c.source,
       tier: c.countrySource === "CAPITALBOT" ? (c.country === AI_TIER1 ? "T1" : "NON_T1") : undefined,
+      phoneCountry: c.countrySource === "TG_PHONE_COUNTRY" ? (c.country ?? undefined) : undefined,
     },
     { via: "retry", actorId: actor.id },
   );

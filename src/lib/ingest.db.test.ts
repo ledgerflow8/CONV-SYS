@@ -119,6 +119,39 @@ describe("ingestConvoEvent: qualification", () => {
     expect(await db.convo.count()).toBe(1);
   });
 
+  it("uses Telegram PeerSettings phone-country for a hidden number", async () => {
+    const t = await makeTeam();
+    const out = await ingest({
+      tgAccount: t.account.username,
+      peerId: "p",
+      firstMsgAt: minutesAgo(10).toISOString(),
+      repliedAt: minutesAgo(2).toISOString(),
+      phoneCountry: "us", // normalised to US
+    });
+    expect(out.status).toBe("QUALIFIED");
+    expect(await db.convo.findUniqueOrThrow({ where: { id: out.convoId } })).toMatchObject({ country: "US", countrySource: "TG_PHONE_COUNTRY" });
+  });
+
+  it("rejects a non-Tier-1 PeerSettings phone-country", async () => {
+    const t = await makeTeam();
+    const out = await ingest({ tgAccount: t.account.username, peerId: "p", firstMsgAt: minutesAgo(10).toISOString(), phoneCountry: "NG" });
+    expect(out).toMatchObject({ status: "REJECTED", reason: "non_tier1" });
+  });
+
+  it("a visible phone beats the PeerSettings country", async () => {
+    const t = await makeTeam();
+    const out = await ingest({
+      tgAccount: t.account.username,
+      peerId: "p",
+      peerPhone: "+1 415 555 0100",
+      firstMsgAt: minutesAgo(10).toISOString(),
+      repliedAt: minutesAgo(2).toISOString(),
+      phoneCountry: "NG",
+    });
+    expect(out.status).toBe("QUALIFIED");
+    expect((await db.convo.findUniqueOrThrow({ where: { id: out.convoId } })).countrySource).toBe("PHONE");
+  });
+
   it("refuses bad input", async () => {
     const t = await makeTeam();
     const bad = [

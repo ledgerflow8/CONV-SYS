@@ -99,6 +99,9 @@ class AiEngine:
         # set by main.lifespan to Service.report_ai_outcome; reports the chat's convo state (and a
         # tierFiltered verdict that sends no reply) to the portal after each turn.
         self.report_ai_outcome = None  # type: ignore[assignment]
+        # set by main.lifespan to Service.resolve_peer_country; resolves a chat's country (visible
+        # phone → Telegram PeerSettings → unknown), cached, for the Tier-1 gate.
+        self.resolve_country = None  # type: ignore[assignment]
 
     # ── scheduling ────────────────────────────────────────────────────────────
     def notify(self, account_id: int, peer_id: str) -> None:
@@ -246,9 +249,12 @@ class AiEngine:
                 enabled = bool(override["only"])
             if override.get("hidden"):
                 hidden = override["hidden"]
-        # phonenumbers' metadata parsing is synchronous CPU work; keep it off the event loop so a
-        # burst of turns at startup can't stall the process.
-        country = await asyncio.to_thread(tier.country_for_phone, chat.peer_phone)
+        # Country order: visible phone → Telegram PeerSettings phone_country → hidden-phone rule.
+        # The resolver caches and keeps phonenumbers (synchronous) off the event loop.
+        if self.resolve_country is not None:
+            country = (await self.resolve_country(chat.account_id, chat.peer_id))["country"]
+        else:
+            country = await asyncio.to_thread(tier.country_for_phone, chat.peer_phone)
         return tier.tier_decision(country, enabled=enabled, hidden_mode=hidden, tier1=list(tier1))
 
     def _pick_fan_media(self, msgs: list[Message], out_before: datetime | None) -> Message | None:

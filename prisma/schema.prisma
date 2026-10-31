@@ -43,6 +43,7 @@ enum CountrySrc {
   MANUAL
   UNKNOWN
   CAPITALBOT // Capitalbot verified the fan's tier when their phone was hidden (country "T1")
+  TG_PHONE_COUNTRY // Telegram's PeerSettings phone-country for a hidden number (real ISO-2)
 }
 
 enum WeekStatus {

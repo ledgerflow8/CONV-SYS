@@ -34,6 +34,7 @@ class FakeAccount:
     privacy: dict[str, str] | None = None  # overrides over the "everybody" defaults
     stories: list[int] = field(default_factory=list)  # own story ids
     music: list[int] = field(default_factory=list)  # saved-music doc ids
+    peer_countries: dict[str, str] = field(default_factory=dict)  # peer_id str → PeerSettings phone_country
     # Full Telegram history per fan (peer id str → messages oldest first), for recovery scans.
     history: dict[str, list[IncomingMessage]] = field(default_factory=dict)
     scan_error: TgError | None = None  # raised by recent_peers (e.g. a long FloodWait)
@@ -218,6 +219,9 @@ class FakeClient:
             self._fake.music = []
         self.music_removed += n
         return n
+
+    async def get_peer_country(self, peer_id: int) -> str | None:
+        return self._fake.peer_countries.get(str(peer_id)) if self._fake else None
 
     def on_private_message(self, cb) -> None:
         self._cb = cb

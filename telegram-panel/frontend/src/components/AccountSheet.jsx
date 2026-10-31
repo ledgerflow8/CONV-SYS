@@ -12,6 +12,11 @@ const STATE_TONE = {
   filtered: "text-amber-600",
 };
 
+const COUNTRY_SOURCE_LABEL = {
+  phone: "visible phone",
+  tg_phone_country: "Telegram phone-country",
+};
+
 const PRIVACY_FIELDS = [
   ["last_seen", "Last seen & online"],
   ["profile_photo", "Profile photo"],
@@ -327,6 +332,9 @@ export default function AccountSheet({ accountId, onClose, onChanged }) {
                           {c.ai_state}
                           {c.ai_state_reason ? ` · ${c.ai_state_reason}` : ""} · {ago(c.last_in_at)}
                         </div>
+                        {c.country_source && c.country_source !== "hidden" && (
+                          <div className="text-xs text-muted-foreground">{c.country ?? "?"} · {COUNTRY_SOURCE_LABEL[c.country_source] ?? c.country_source}</div>
+                        )}
                       </div>
                       {resettable && (
                         <button

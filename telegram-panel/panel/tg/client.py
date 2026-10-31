@@ -204,6 +204,7 @@ class TgClient(Protocol):
     async def set_privacy(self, rules: dict[str, str]) -> None: ...
     async def delete_all_stories(self) -> int: ...
     async def remove_profile_music(self) -> int: ...
+    async def get_peer_country(self, peer_id: int) -> str | None: ...
 
 
 ClientFactory = Callable[[ConnectParams], TgClient]
@@ -622,6 +623,20 @@ class TelethonClient:
             except Exception:
                 pass  # needs a full access-hash we don't have; leave it rather than fail the whole clean-up
         return removed
+
+    async def get_peer_country(self, peer_id: int) -> str | None:
+        """The sender's phone country from Telegram's PeerSettings card (shown for new chats from
+        non-contacts even when the number is hidden), as an ISO-2 code, or None. Our Telethon layer
+        (229) includes PeerSettings.phone_country, so no raw/layer workaround is needed. This is a
+        plain request, not an update, so it never hits the TypeNotFoundError (newer-layer) path."""
+        try:
+            peer = await self._c.get_input_entity(peer_id)  # cached from the fan's messages
+            res = await self._c(functions.messages.GetPeerSettingsRequest(peer=peer))
+        except Exception as e:
+            raise classify(e) from e
+        settings = getattr(res, "settings", res)
+        pc = getattr(settings, "phone_country", None)
+        return pc.upper() if isinstance(pc, str) and len(pc) == 2 and pc.isalpha() else None
 
     def on_private_message(self, cb: MessageCallback) -> None:
         async def handler(event: events.NewMessage.Event) -> None:

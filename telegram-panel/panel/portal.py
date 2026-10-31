@@ -127,6 +127,7 @@ def convo_event(
     peer_phone: str | None,
     replied_at: datetime | None,
     tier: str | None = None,
+    phone_country: str | None = None,
 ) -> dict:
     # tgUserId is the stable key: the portal matches on it so a convo still lands on the right account
     # after a username change (the account's username can move; its numeric id never does).
@@ -138,11 +139,22 @@ def convo_event(
     if tier:
         # Capitalbot's tier verdict ("T1" / "NON_T1"), used by the portal only when the phone is hidden.
         event["tier"] = tier
+    if phone_country:
+        # ISO-2 country from Telegram's PeerSettings card (hidden number); portal source TG_PHONE_COUNTRY.
+        event["phoneCountry"] = phone_country
     return event
 
 
 async def enqueue_convo(
-    session: AsyncSession, tg_account: str, tg_user_id: str, chat, *, with_reply: bool, tier: str | None = None, suffix: str | None = None
+    session: AsyncSession,
+    tg_account: str,
+    tg_user_id: str,
+    chat,
+    *,
+    with_reply: bool,
+    tier: str | None = None,
+    phone_country: str | None = None,
+    suffix: str | None = None,
 ) -> None:
     kind_suffix = suffix or ("reply" if with_reply else "first")
     payload = convo_event(
@@ -153,6 +165,7 @@ async def enqueue_convo(
         peer_phone=chat.peer_phone,
         replied_at=chat.first_reply_at if with_reply else None,
         tier=tier,
+        phone_country=phone_country,
     )
     # Dedupe on the stable numeric id, not the username, so a rename can't split a chat into two rows.
     await _enqueue(session, "convo", f"convo:{tg_user_id}:{chat.peer_id}:{kind_suffix}", payload)

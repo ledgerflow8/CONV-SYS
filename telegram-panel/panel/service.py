@@ -10,7 +10,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from panel import portal
+from panel import portal, tier
 from panel.accounts import AccountManager
 from panel.crypto import Crypto, InvalidToken
 from panel.models import Account, Activity, Chat, Lead, Message, Profile, utcnow
@@ -75,6 +75,9 @@ class Service:
         self.reconnect_delays = [5.0, 15.0, 30.0, 60.0, 120.0, 300.0]
         self.reconnect_jitter = 0.2
         self._reconnect_tasks: dict[int, asyncio.Task] = {}
+        # Resolved country per (account_id, peer_id): {"country": ISO-2|None, "source": phone|tg_phone_country|hidden}.
+        # In-memory (re-resolved after a restart as chats become active); the durable record is the portal + the activity log.
+        self._peer_country: dict[tuple[int, str], dict] = {}
 
     # ── helpers ────────────────────────────────────────────────────────────
     def connect_params(self, acc: Account, session_string: str | None = None) -> ConnectParams:
@@ -236,6 +239,47 @@ class Service:
             # A reply from Capitalbot carries its "Tier 1 (AI verified)" verdict, used when no phone.
             await portal.enqueue_convo(session, tg_account, tg_user_id, chat, with_reply=True, tier=_ai_tier(chat))
             chat.reported_reply = True
+
+    def cached_country(self, account_id: int, peer_id: str) -> dict | None:
+        """The resolved country for a chat, if it's been resolved this process lifetime (for display)."""
+        return self._peer_country.get((account_id, str(peer_id)))
+
+    async def resolve_peer_country(self, account_id: int, peer_id: str) -> dict:
+        """Resolve a chat's country, cached per (account, peer): visible phone → Telegram PeerSettings
+        phone_country (shown for non-contacts even when the number is hidden) → unknown. On first
+        resolution it logs which source decided it, and reports a PeerSettings country to the portal
+        (countrySource TG_PHONE_COUNTRY). Never called at startup."""
+        key = (account_id, str(peer_id))
+        cached = self._peer_country.get(key)
+        if cached is not None:
+            return cached
+        async with self.sessionmaker() as session:
+            acc = await session.get(Account, account_id)
+            chat = await session.scalar(select(Chat).where(Chat.account_id == account_id, Chat.peer_id == str(peer_id)))
+            if acc is None or chat is None:
+                return {"country": None, "source": "hidden"}
+            country = await asyncio.to_thread(tier.country_for_phone, chat.peer_phone)
+            source = "phone" if country else None
+            if country is None:
+                client = self.manager.get(account_id)
+                if client is not None:
+                    try:
+                        pc = await client.get_peer_country(int(peer_id))
+                    except TgError as e:
+                        log.debug("peer-country lookup failed account=%s peer=%s: %s", account_id, peer_id, e.detail)
+                        return {"country": None, "source": "hidden"}  # transient (e.g. FloodWait): don't cache, retry later
+                    if pc:
+                        country, source = pc, "tg_phone_country"
+            result = {"country": country, "source": source or "hidden"}
+            self._peer_country[key] = result
+            where = {"phone": "visible phone", "tg_phone_country": "Telegram phone-country", "hidden": "hidden"}[result["source"]]
+            await self.log_activity(session, "info", "country_source", f"@{peer_id}: country {country or '?'} via {where}", account_id)
+            if result["source"] == "tg_phone_country" and chat.first_in_at is not None:
+                await portal.enqueue_convo(
+                    session, acc.username or str(acc.tg_user_id), str(acc.tg_user_id), chat, with_reply=False, phone_country=country, suffix="country"
+                )
+            await session.commit()
+            return result
 
     async def report_ai_outcome(self, account_id: int, peer_id: str) -> None:
         """Called after an AI turn (wired from ai.py). Makes sure the portal has this chat's convo

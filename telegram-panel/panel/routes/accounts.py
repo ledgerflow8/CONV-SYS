@@ -130,19 +130,23 @@ async def get_account(account_id: int, request: Request) -> dict:
                 .limit(20)
             )
         ).all()
-        card["chats"] = [
-            {
-                "peer_id": c.peer_id,
-                "peer_name": c.peer_name,
-                "peer_username": c.peer_username,
-                "ai_state": c.ai_state,
-                "ai_state_reason": c.ai_state_reason,
-                "cooldown_until": c.cooldown_until.isoformat() if c.cooldown_until else None,
-                "last_in_at": c.last_in_at.isoformat() if c.last_in_at else None,
-                "last_out_at": c.last_out_at.isoformat() if c.last_out_at else None,
-            }
-            for c in chats
-        ]
+        card["chats"] = []
+        for c in chats:
+            cc = service.cached_country(account_id, c.peer_id)
+            card["chats"].append(
+                {
+                    "peer_id": c.peer_id,
+                    "peer_name": c.peer_name,
+                    "peer_username": c.peer_username,
+                    "ai_state": c.ai_state,
+                    "ai_state_reason": c.ai_state_reason,
+                    "cooldown_until": c.cooldown_until.isoformat() if c.cooldown_until else None,
+                    "last_in_at": c.last_in_at.isoformat() if c.last_in_at else None,
+                    "last_out_at": c.last_out_at.isoformat() if c.last_out_at else None,
+                    "country": cc["country"] if cc else None,
+                    "country_source": cc["source"] if cc else None,
+                }
+            )
     return card
 
 

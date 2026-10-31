@@ -211,6 +211,7 @@ export default async function ConvosPage({ searchParams }: { searchParams: Promi
 /** Country/source line. Capitalbot's tier verdict shows as plain words, not a raw country code. */
 function countryLabel(c: Prisma.ConvoGetPayload<{ select: typeof convoSelect }>): string {
   if (c.countrySource === "CAPITALBOT") return c.country ? "Tier 1 (AI verified)" : "Not Tier 1 (AI)";
+  if (c.countrySource === "TG_PHONE_COUNTRY") return c.country ? `${c.country} (Telegram phone)` : "??";
   return c.country ? `${c.country} (${c.countrySource.toLowerCase()})` : "??";
 }
 
