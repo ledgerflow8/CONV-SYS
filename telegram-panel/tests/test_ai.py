@@ -405,6 +405,54 @@ def test_credits_resume_automatically_on_the_next_successful_call(client, direct
     deliver(client, acc, IncomingMessage(fan(), tg_msg_id=2, out=False, kind="text", text="still there?", at=at(10)))
     run_turn(client, acc)
     assert client.app.state.ai.credit_over_until is None  # a successful call cleared the pause
+    kinds = [k for k, _ in activities(client)]
+    assert "ai_credit_over" in kinds and "ai_credit_resume" in kinds  # pause start AND end are logged (item 1)
+
+
+def test_credit_pause_re_probes_and_resumes_without_a_new_fan_message(client, directory):
+    """Defect B fix: while paused, the chat re-probes itself when the interval elapses and resumes
+    on its own — no second fan message required (client feedback 2026-11-02)."""
+    from datetime import timedelta
+
+    acc = setup(client, directory, 96, 9920, "reprobe")
+    client.app.state.ai.credit_probe = timedelta(seconds=0.05)  # re-probe almost immediately
+    fake = FakeCapital(cresp(aiCreditOver=True), cresp(texts=["back online"], conversation_id=3))
+    set_capital(client, fake)
+    deliver(client, acc, IncomingMessage(fan(), tg_msg_id=1, out=False, kind="text", text="hi", at=at(9)))
+    run_turn(client, acc)
+    assert client.app.state.ai.credit_over_until is not None  # paused and a re-probe was scheduled
+    assert (acc, "555") in client.app.state.ai._retries
+
+    async def _wait():
+        import asyncio
+
+        await asyncio.sleep(0.2)  # let the scheduled re-probe fire
+
+    run(client, _wait)
+    assert client.app.state.ai.credit_over_until is None  # re-probe went through clean → resumed
+    assert len(fake.calls) == 2  # it probed again on its own, with no new fan message
+    assert any(s.get("text") == "back online" for s in fake_client(client, acc).sent)
+
+
+def test_fan_message_during_the_pause_is_not_lost(client, directory):
+    """Defect A fix: a fan who writes while paused still gets answered — the turn re-probes itself
+    instead of being silently dropped."""
+    from datetime import timedelta
+
+    acc = setup(client, directory, 97, 9930, "notlost")
+    client.app.state.ai.credit_probe = timedelta(seconds=0.05)
+    fake = FakeCapital(cresp(aiCreditOver=True), cresp(texts=["hey sorry"], conversation_id=4))
+    set_capital(client, fake)
+    deliver(client, acc, IncomingMessage(fan(), tg_msg_id=1, out=False, kind="text", text="you there?", at=at(9)))
+    run_turn(client, acc)  # trips the pause; the fan's message is now pending
+
+    async def _wait():
+        import asyncio
+
+        await asyncio.sleep(0.2)
+
+    run(client, _wait)
+    assert any(s.get("text") == "hey sorry" for s in fake_client(client, acc).sent)  # answered, not dropped
 
 
 # ── overrides are never sent to Capitalbot (client decision 2026-10-17) ──────

@@ -36,7 +36,10 @@ HISTORY_MAX_BYTES = 200_000
 TYPING_CAP_SEC = 6.0
 DEFAULT_DEBOUNCE_SEC = 8
 DEFAULT_TYPING_CPS = 20
-CREDIT_OVER_PAUSE = timedelta(minutes=10)
+# When Capitalbot says credits are depleted we pause, then actively re-probe this often until a call
+# goes through clean (client feedback 2026-11-02: "re-probe and auto-resume within minutes"). It is a
+# re-probe cadence, not a dead window — each waiting chat retries itself when the interval elapses.
+CREDIT_OVER_PAUSE = timedelta(minutes=2)
 MEDIA_PER_MIN = 5
 MEDIA_PER_DAY = 30
 KEEP_CALLING = ("active", "converted")
@@ -93,8 +96,10 @@ class AiEngine:
         self._http = http
         self._sem = asyncio.Semaphore(MAX_IN_FLIGHT)
         self._debounce: dict[tuple[int, str], asyncio.Task] = {}
+        self._retries: dict[tuple[int, str], asyncio.Task] = {}  # credit-pause re-probes, one per chat
         self._chat_locks: dict[tuple[int, str], asyncio.Lock] = {}
         self.credit_over_until: datetime | None = None
+        self.credit_probe = CREDIT_OVER_PAUSE  # re-probe cadence while paused (overridable in tests)
         self.last_error: str | None = None
         # set by main.lifespan to Service.report_ai_outcome; reports the chat's convo state (and a
         # tierFiltered verdict that sends no reply) to the portal after each turn.
@@ -127,8 +132,34 @@ class AiEngine:
         async with self.sessionmaker() as s:
             return float(await get_setting(s, "ai_debounce_sec", DEFAULT_DEBOUNCE_SEC))
 
+    def _schedule_retry(self, account_id: int, peer_id: str, when: datetime) -> None:
+        """Re-probe this chat once `when` passes (used after a credit pause). At most one pending
+        retry per chat; the per-chat lock and the MAX_IN_FLIGHT semaphore keep a wake-up herd bounded."""
+        key = (account_id, peer_id)
+        old = self._retries.get(key)
+        if old is not None and not old.done():
+            return
+        self._retries[key] = asyncio.create_task(self._retry_after(key, account_id, peer_id, when))
+
+    async def _retry_after(self, key: tuple[int, str], account_id: int, peer_id: str, when: datetime) -> None:
+        try:
+            delay = (when - utcnow()).total_seconds()
+            if delay > 0:
+                await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            self._retries.pop(key, None)
+            return
+        # Pop before running so that, if the chat is still paused, _run_turn can arm the next probe.
+        self._retries.pop(key, None)
+        try:
+            await self.run_turn(account_id, peer_id)
+        except Exception:
+            log.exception("AI credit re-probe failed for account=%s peer=%s", account_id, peer_id)
+
     async def shutdown(self) -> None:
         for task in list(self._debounce.values()):
+            task.cancel()
+        for task in list(self._retries.values()):
             task.cancel()
 
     # ── one turn for one chat ──────────────────────────────────────────────────
@@ -141,6 +172,9 @@ class AiEngine:
         if not self.capital.configured:
             return
         if self.credit_over_until and utcnow() < self.credit_over_until:
+            # Don't drop this fan turn: re-probe this chat when the pause lifts, so it resumes on its
+            # own even if no new fan message ever arrives (client feedback 2026-11-02, defects A & B).
+            self._schedule_retry(account_id, peer_id, self.credit_over_until)
             return
         req = await self._gather(account_id, peer_id)
         if req is None:
@@ -168,8 +202,6 @@ class AiEngine:
                 Path(file_path).unlink(missing_ok=True)
 
         self.last_error = None
-        if self.credit_over_until is not None and not resp.flag("aiCreditOver"):
-            self.credit_over_until = None  # a call went through without the flag → credits are back, resume now
         answered = await self._apply(account_id, peer_id, resp, uploaded=bool(file_path), out_before=req["out_before"])
         if resp.has_content and not answered and self.manager.is_connected(account_id):
             await self._send(account_id, peer_id, resp)
@@ -310,8 +342,17 @@ class AiEngine:
             if note:
                 await self._log(s, "info" if note[0] else "warn", "ai_flag", f"@{peer_id}: {note[1]}", account_id)
             if resp.flag("aiCreditOver"):
-                self.credit_over_until = utcnow() + CREDIT_OVER_PAUSE
-                await self._log(s, "error", "ai_credit_over", "Capitalbot AI credits are depleted; pausing AI for 10 min", account_id)
+                self.credit_over_until = utcnow() + self.credit_probe
+                mins = max(1, round(self.credit_probe.total_seconds() / 60))
+                await self._log(s, "error", "ai_credit_over", f"Capitalbot AI credits are depleted; pausing AI and re-probing every {mins} min until they return", account_id)
+                # Arm the re-probe from the chat that hit depletion, so credits auto-resume even with
+                # no further fan traffic (client feedback 2026-11-02, defect B).
+                self._schedule_retry(account_id, peer_id, self.credit_over_until)
+            elif self.credit_over_until is not None:
+                # A call went through without the flag → credits are back. Resume now, and log the end
+                # of the pause so its start/stop window is visible in the activity log (item 1).
+                self.credit_over_until = None
+                await self._log(s, "info", "ai_credit_resume", "Capitalbot responded without the credits flag; AI resumed", account_id)
             if not resp.has_content and resp.stop_flag is None and not resp.flag("chatCooldown"):
                 # Empty content with no flag is a Capitalbot bug (docs): log it with the body.
                 await self._log(s, "error", "ai_empty", f"empty content, no flag; convId={resp.conversation_id} body={json.dumps(resp.raw)[:400]}", account_id)
