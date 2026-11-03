@@ -45,6 +45,17 @@ MEDIA_PER_DAY = 30
 KEEP_CALLING = ("active", "converted")
 FILTER_FLAGS = ("tierFiltered", "genderFiltered", "ignored", "messagedAlready", "internalAccount")
 
+# Reply watchdog (client 2026-11-03): a safety net that re-attempts chats whose newest message is an
+# unanswered fan message, so a reply missed because of a brief disconnect, a credit pause or a dropped
+# debounce doesn't leave the fan stuck Pending. Bounded: only chats aged in [MIN, MAX], at most once per
+# RETRY_EVERY, and only while connected and not paused/on cooldown.
+WATCHDOG_INTERVAL_SEC = 300
+WATCHDOG_MIN_AGE = timedelta(minutes=10)
+WATCHDOG_MAX_AGE = timedelta(days=7)
+WATCHDOG_RETRY_EVERY = timedelta(hours=1)
+WATCHDOG_GAP_SEC = 0.3
+WATCHDOG_MAX_PER_SCAN = 300
+
 
 def build_chat_history(msgs: list[Message], *, max_messages: int = HISTORY_MESSAGES, max_bytes: int = HISTORY_MAX_BYTES) -> list[dict]:
     """The last messages as Capitalbot's chatHistory. `out` → bot, fan → user; media becomes a
@@ -97,6 +108,7 @@ class AiEngine:
         self._sem = asyncio.Semaphore(MAX_IN_FLIGHT)
         self._debounce: dict[tuple[int, str], asyncio.Task] = {}
         self._retries: dict[tuple[int, str], asyncio.Task] = {}  # credit-pause re-probes, one per chat
+        self._watchdog_seen: dict[tuple[int, str], datetime] = {}  # last watchdog re-attempt per chat
         self._chat_locks: dict[tuple[int, str], asyncio.Lock] = {}
         self.credit_over_until: datetime | None = None
         self.credit_probe = CREDIT_OVER_PAUSE  # re-probe cadence while paused (overridable in tests)
@@ -161,6 +173,61 @@ class AiEngine:
             task.cancel()
         for task in list(self._retries.values()):
             task.cancel()
+
+    # ── reply watchdog ─────────────────────────────────────────────────────────
+    async def watchdog_loop(self) -> None:
+        """Periodically re-attempt chats whose latest message is an unanswered fan message."""
+        while True:
+            try:
+                await asyncio.sleep(WATCHDOG_INTERVAL_SEC)
+                await self._watchdog_scan()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("reply watchdog failed")
+
+    async def _watchdog_scan(self) -> None:
+        if not self.capital.configured:
+            return
+        if self.credit_over_until and utcnow() < self.credit_over_until:
+            return  # paused; the credit re-probe handles resumption, no need to pile on
+        now = utcnow()
+        self._watchdog_seen = {k: v for k, v in self._watchdog_seen.items() if now - v < WATCHDOG_RETRY_EVERY}
+        async with self.sessionmaker() as s:
+            if not await get_setting(s, "ai_global_on", True):
+                return
+            rows = (
+                await s.scalars(select(Chat).where(Chat.ai_state.in_(KEEP_CALLING), Chat.last_in_at.is_not(None)))
+            ).all()
+            due: list[tuple[int, str]] = []
+            for c in rows:
+                if c.last_out_at is not None and c.last_in_at <= c.last_out_at:
+                    continue  # already answered
+                age = now - c.last_in_at
+                if age < WATCHDOG_MIN_AGE or age > WATCHDOG_MAX_AGE:
+                    continue
+                if c.cooldown_until is not None and now < c.cooldown_until:
+                    continue
+                if not self.manager.is_connected(c.account_id):
+                    continue  # it'll be retried once the account reconnects and is scanned again
+                key = (c.account_id, c.peer_id)
+                if key in self._watchdog_seen:
+                    continue
+                due.append(key)
+                if len(due) >= WATCHDOG_MAX_PER_SCAN:
+                    break
+        if not due:
+            return
+        for account_id, peer_id in due:
+            self._watchdog_seen[(account_id, peer_id)] = now
+            try:
+                await self.run_turn(account_id, peer_id)
+            except Exception:
+                log.exception("watchdog turn failed account=%s peer=%s", account_id, peer_id)
+            await asyncio.sleep(WATCHDOG_GAP_SEC)
+        async with self.sessionmaker() as s:
+            await self._log(s, "info", "ai_watchdog", f"reply watchdog re-attempted {len(due)} unanswered chat(s)", None)
+            await s.commit()
 
     # ── one turn for one chat ──────────────────────────────────────────────────
     async def run_turn(self, account_id: int, peer_id: str) -> None:
@@ -228,7 +295,12 @@ class AiEngine:
                 return None
             if chat.cooldown_until is not None and utcnow() < chat.cooldown_until:
                 return None
-            gate = await self._tier_gate(s, profile, chat)
+            tier1 = await get_setting(s, "tier1_countries", None) or tier.DEFAULT_TIER1
+            nofilter = await get_setting(s, f"nofilter_preset:{profile.id}", None)
+            # Resolve the country once (visible phone → Telegram PeerSettings) when either the pre-filter
+            # needs it or this persona has a no-filter preset to switch to for a confirmed Tier-1 fan.
+            info = await self._resolve_country(chat) if (self.phone_filter_enabled or nofilter is not None) else None
+            gate = await self._tier_gate(s, profile, chat, info, list(tier1))
             if gate == tier.REJECT_NON_TIER1:
                 # Visible non-Tier-1 phone: don't pay Capitalbot. The portal already has the phone
                 # (sent on the first convo event) and rejects it as non_tier1 on its own.
@@ -239,6 +311,11 @@ class AiEngine:
             if gate == tier.SKIP:
                 await s.commit()  # hidden phone, owner set Tier-1-only to not reply: stay quiet this turn
                 return None
+            # When OUR own country is a confirmed Tier-1 (visible phone or Telegram phone-country), use
+            # the persona's no-filter preset so Capitalbot's name-based tier guess can't drop a real
+            # Tier-1 fan (client 2026-11-03). Unknown country → the normal preset (tier filter on).
+            reliable_t1 = bool(info and info.get("source") in tier.RELIABLE_SOURCES and (info.get("country") or "") in tier1)
+            preset_id = int(nofilter) if (reliable_t1 and nofilter is not None) else int(profile.capital_preset_id)
             rows = (
                 await s.scalars(
                     select(Message)
@@ -258,7 +335,7 @@ class AiEngine:
                 user_infos["username"] = chat.peer_username
             return {
                 "model_id": profile.capital_model_id,
-                "preset_id": profile.capital_preset_id,
+                "preset_id": preset_id,
                 "account_id": str(acc.tg_user_id),
                 "user_infos": user_infos,
                 "history": history,
@@ -268,26 +345,29 @@ class AiEngine:
                 "media_counter": dict(chat.media_uploads or {}),
             }
 
-    async def _tier_gate(self, s: AsyncSession, profile: Profile, chat: Chat) -> str:
-        """Resolve the Tier-1 filter for this chat: global settings, with a per-persona override."""
+    async def _resolve_country(self, chat: Chat) -> dict:
+        """This chat's country and how we know it ({"country", "source"}): visible phone → Telegram
+        PeerSettings phone_country → hidden. The resolver (Service.resolve_peer_country) caches and
+        keeps phonenumbers off the event loop; without it (step-1/2 tests) we use the visible phone."""
+        if self.resolve_country is not None:
+            return await self.resolve_country(chat.account_id, chat.peer_id)
+        country = await asyncio.to_thread(tier.country_for_phone, chat.peer_phone)
+        return {"country": country, "source": "phone" if country else "hidden"}
+
+    async def _tier_gate(self, s: AsyncSession, profile: Profile, chat: Chat, info: dict | None, tier1: list[str]) -> str:
+        """The Tier-1 pre-filter decision from the already-resolved country `info`: global settings,
+        with a per-persona override. Feature flag off → never filter."""
         if not self.phone_filter_enabled:
-            return tier.ALLOW  # feature flag off → no filtering at all
+            return tier.ALLOW
         enabled = bool(await get_setting(s, "tier1_only", False))
         hidden = await get_setting(s, "tier1_hidden", "ai")
-        tier1 = await get_setting(s, "tier1_countries", None) or tier.DEFAULT_TIER1
         override = await get_setting(s, f"tier1_profile:{profile.id}", None)
         if isinstance(override, dict):
             if override.get("only") is not None:
                 enabled = bool(override["only"])
             if override.get("hidden"):
                 hidden = override["hidden"]
-        # Country order: visible phone → Telegram PeerSettings phone_country → hidden-phone rule.
-        # The resolver caches and keeps phonenumbers (synchronous) off the event loop.
-        if self.resolve_country is not None:
-            country = (await self.resolve_country(chat.account_id, chat.peer_id))["country"]
-        else:
-            country = await asyncio.to_thread(tier.country_for_phone, chat.peer_phone)
-        return tier.tier_decision(country, enabled=enabled, hidden_mode=hidden, tier1=list(tier1))
+        return tier.tier_decision((info or {}).get("country"), enabled=enabled, hidden_mode=hidden, tier1=list(tier1))
 
     def _pick_fan_media(self, msgs: list[Message], out_before: datetime | None) -> Message | None:
         """The newest uploadable fan media since the last reply (PLAN.md §4.3 step 6)."""

@@ -17,6 +17,10 @@ except Exception:  # pragma: no cover - import guard
 # Mirrors the portal's default Tier-1 list (src/lib/settings-defaults.ts). The owner can edit it.
 DEFAULT_TIER1 = ["US", "CA", "GB", "AU", "NZ", "IE", "GG", "JE", "IM", "DE", "NO", "FI", "FR"]
 
+# Country sources we trust as OUR own reliable verdict (not Capitalbot's name-based tier guess):
+# a visible E.164 phone, or Telegram's PeerSettings phone-country for a hidden number.
+RELIABLE_SOURCES = ("phone", "tg_phone_country")
+
 # Gate decisions.
 ALLOW = "allow"  # call Capitalbot as usual
 REJECT_NON_TIER1 = "reject_non_tier1"  # visible non-Tier-1 phone: skip AI (portal rejects from the phone)

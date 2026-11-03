@@ -1,9 +1,12 @@
 """CLI: python -m panel gen-key | set-password | disk | recover --since <ISO time UTC> [--apply]
+       | reprocess-tierfiltered [--apply]
 
-  disk      What fills DATA_DIR (read-only).
-  recover   Ask the RUNNING panel (on this machine) to re-scan chats since a time and queue missing
-            convo events. Without --apply it's a dry run that only reports. It never connects to
-            Telegram itself: the panel's own connections do the reading.
+  disk                    What fills DATA_DIR (read-only).
+  recover                 Ask the RUNNING panel (on this machine) to re-scan chats since a time and
+                          queue missing convo events. Without --apply it's a dry run that only reports.
+                          It never connects to Telegram itself: the panel's own connections do the reading.
+  reprocess-tierfiltered  Ask the RUNNING panel to re-open chats stopped as tierFiltered whose own
+                          country is a confirmed Tier-1 and re-queue a reply. Dry run without --apply.
 """
 
 import asyncio
@@ -109,6 +112,60 @@ def _recover(args: list[str]) -> int:
     return 0
 
 
+def _panel_client(timeout: float = 30):
+    """An httpx.Client carrying the same login cookie the browser holds, for the local panel."""
+    import os
+    import sqlite3
+
+    import httpx
+
+    from panel.auth import COOKIE, Signer
+    from panel.config import get_settings
+
+    settings = get_settings()
+    con = sqlite3.connect(f"file:{settings.db_path}?mode=ro", uri=True)
+    try:
+        row = con.execute("SELECT value FROM settings WHERE key = 'session_epoch'").fetchone()
+    finally:
+        con.close()
+    epoch = int(row[0]) if row else 0
+    cookie = Signer(settings.panel_secret).make(epoch)
+    base = f"http://127.0.0.1:{os.environ.get('PORT', '10000')}/api/system"
+    return httpx.Client(cookies={COOKIE: cookie}, headers={"X-Panel": "1"}, timeout=timeout), base
+
+
+def _reprocess(args: list[str]) -> int:
+    import time
+
+    apply = "--apply" in args
+    client, base = _panel_client()
+    url = f"{base}/reprocess-tierfiltered"
+    with client as c:
+        r = c.post(url, json={"dry_run": not apply})
+        if r.status_code != 200:
+            print(f"Panel refused: {r.status_code} {r.text}", file=sys.stderr)
+            return 1
+        print(("Re-opening" if apply else "Dry run") + " tierFiltered chats with a confirmed Tier-1 country …")
+        while True:
+            job = c.get(url).json()["reprocess"]
+            print(f"  scanned {job['scanned']}, Tier-1 so far {job['reliable_t1']}", end="\r", flush=True)
+            if not job["running"]:
+                break
+            time.sleep(3)
+    print()
+    print(f"tierFiltered chats scanned: {job['scanned']}  confirmed Tier-1: {job['reliable_t1']}")
+    print(f"Chats {'re-opened and re-queued for a reply' if apply else 'that would be re-opened'}: {job['reopened' if apply else 'reliable_t1']}")
+    for cand in job["candidates"][:20]:
+        print(f"  @{cand['username'] or cand['account_id']} peer {cand['peer_id']} — {cand['country']}")
+    if len(job["candidates"]) > 20:
+        print(f"  … and {len(job['candidates']) - 20} more")
+    for e in job["errors"]:
+        print(f"  error: {e}", file=sys.stderr)
+    if not apply:
+        print("Nothing was changed. Re-run with --apply to re-open them (set the no-filter presets first).")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     cmd = argv[1] if len(argv) > 1 else ""
     if cmd == "gen-key":
@@ -130,6 +187,8 @@ def main(argv: list[str]) -> int:
         return _disk()
     if cmd == "recover":
         return _recover(argv[2:])
+    if cmd == "reprocess-tierfiltered":
+        return _reprocess(argv[2:])
     print(__doc__, file=sys.stderr)
     return 2
 

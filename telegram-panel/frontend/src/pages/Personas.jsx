@@ -123,6 +123,7 @@ function Editor({ profile, catalog, onClose, onSaved }) {
   const [name, setName] = useState(profile.name || "");
   const [modelId, setModelId] = useState(profile.capital_model_id ?? "");
   const [presetId, setPresetId] = useState(profile.capital_preset_id ?? "");
+  const [nofilterId, setNofilterId] = useState(profile.capital_preset_id_nofilter ?? "");
   const [ov, setOv] = useState(profile.overrides || {});
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -134,7 +135,13 @@ function Editor({ profile, catalog, onClose, onSaved }) {
     setBusy(true);
     setError("");
     try {
-      const body = { name, capital_model_id: Number(modelId), capital_preset_id: Number(presetId), overrides: ov };
+      const body = {
+        name,
+        capital_model_id: Number(modelId),
+        capital_preset_id: Number(presetId),
+        capital_preset_id_nofilter: nofilterId === "" ? null : Number(nofilterId),
+        overrides: ov,
+      };
       await api(isNew ? "/api/profiles" : `/api/profiles/${profile.id}`, { method: isNew ? "POST" : "PATCH", body });
       onSaved();
     } catch (e) {
@@ -187,6 +194,22 @@ function Editor({ profile, catalog, onClose, onSaved }) {
             )}
           </Field>
         </div>
+
+        <Field label="No-filter preset (confirmed Tier 1)">
+          {hasCatalog ? (
+            <select value={nofilterId} onChange={(e) => setNofilterId(e.target.value)} className={inputCls}>
+              <option value="">None — always use the preset above</option>
+              {catalog.presets.map((pr) => (
+                <option key={pr.id} value={pr.id}>{pr.name} (#{pr.id})</option>
+              ))}
+            </select>
+          ) : (
+            <input type="number" value={nofilterId} onChange={(e) => setNofilterId(e.target.value)} className={inputCls} placeholder="preset id (optional)" />
+          )}
+          <p className="mt-1 text-xs text-muted-foreground">
+            Same character with Capitalbot's tier filter OFF. Used only when our own country check (visible phone or Telegram phone-country) confirms the fan is Tier 1, so Capitalbot can&apos;t drop a real Tier-1 fan. Leave as None to keep today&apos;s behaviour.
+          </p>
+        </Field>
 
         <p className="text-xs text-muted-foreground">Overrides are optional — leave a field blank to use the preset's own value.</p>
         {GROUPS.map((g) => (

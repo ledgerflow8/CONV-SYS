@@ -14,6 +14,7 @@ from panel.backup import BackupError
 from panel.db import get_setting, set_setting
 from panel.housekeeping import compact, disk_usage
 from panel.recovery import RecoveryJob, recover
+from panel.reprocess import ReprocessJob, reprocess_tierfiltered
 from panel.models import Activity, OutboxItem, utcnow
 from panel.portal import LAST_ERROR_KEY, LAST_OK_KEY, fetch_week_stats, outbox_counts
 
@@ -135,6 +136,31 @@ async def start_recovery(body: RecoverBody, request: Request) -> dict:
 async def recovery_status(request: Request) -> dict:
     job: RecoveryJob | None = request.app.state.recovery
     return {"recovery": job.as_dict() if job else None}
+
+
+class ReprocessBody(BaseModel):
+    dry_run: bool = True
+
+
+@router.post("/reprocess-tierfiltered")
+async def start_reprocess(body: ReprocessBody, request: Request) -> dict:
+    """Re-open chats stopped as tierFiltered whose OWN country is a confirmed Tier-1 and re-queue a
+    reply (reprocess.py). Runs in the background; poll GET /reprocess-tierfiltered for progress."""
+    current: ReprocessJob | None = request.app.state.reprocess
+    if current is not None and current.running:
+        raise HTTPException(409, "A reprocess is already running.")
+    job = ReprocessJob(dry_run=body.dry_run)
+    request.app.state.reprocess = job
+    task = asyncio.create_task(reprocess_tierfiltered(request.app.state.service, job))
+    request.app.state.background.add(task)
+    task.add_done_callback(request.app.state.background.discard)
+    return {"reprocess": job.as_dict()}
+
+
+@router.get("/reprocess-tierfiltered")
+async def reprocess_status(request: Request) -> dict:
+    job: ReprocessJob | None = request.app.state.reprocess
+    return {"reprocess": job.as_dict() if job else None}
 
 
 @router.get("/stats")
