@@ -93,6 +93,11 @@ def create_app(settings: Settings | None = None, dist: Path = DIST, client_facto
                     await service.connect_powered_on()
                 except Exception:
                     log.exception("startup connect failed")
+                try:
+                    # Warm the entity cache from dialogs so replies to pre-restart chats work at once.
+                    await service.warm_access_hashes()
+                except Exception:
+                    log.exception("warm_access_hashes failed")
 
             app.state.background.add(asyncio.create_task(_deferred_startup(app.state.service)))
             app.state.background.add(asyncio.create_task(worker.run()))

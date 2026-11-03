@@ -246,6 +246,10 @@ class AiEngine:
         req = await self._gather(account_id, peer_id)
         if req is None:
             return
+        # Make sure we can reach this peer after a restart: resolve + persist the access_hash if we
+        # don't have one yet (the StringSession drops Telethon's entity cache on every restart).
+        if req.get("access_hash") is None:
+            req["access_hash"] = await self._ensure_access_hash(account_id, peer_id)
 
         file_path: str | None = None
         try:
@@ -271,7 +275,7 @@ class AiEngine:
         self.last_error = None
         answered = await self._apply(account_id, peer_id, resp, uploaded=bool(file_path), out_before=req["out_before"])
         if resp.has_content and not answered and self.manager.is_connected(account_id):
-            await self._send(account_id, peer_id, resp)
+            await self._send(account_id, peer_id, resp, req.get("access_hash"))
         # Report the convo outcome to the portal — crucially, a tierFiltered verdict sends no reply,
         # so this is the only path that reports it (→ rejected non_tier1 instead of stuck Pending).
         if self.report_ai_outcome is not None:
@@ -343,6 +347,7 @@ class AiEngine:
                 "out_before": chat.last_out_at,
                 "media": self._pick_fan_media(msgs, chat.last_out_at),
                 "media_counter": dict(chat.media_uploads or {}),
+                "access_hash": chat.access_hash,
             }
 
     async def _resolve_country(self, chat: Chat) -> dict:
@@ -376,6 +381,24 @@ class AiEngine:
                 return m
         return None
 
+    async def _ensure_access_hash(self, account_id: int, peer_id: str) -> int | None:
+        """Resolve the peer's access_hash from the live entity cache and persist it, so later turns
+        (and restarts) can reach the chat. Returns the hash or None; best-effort, never raises."""
+        client = self.manager.get(account_id)
+        if client is None:
+            return None
+        try:
+            ah = await client.resolve_access_hash(int(peer_id))
+        except Exception:
+            ah = None
+        if ah is not None:
+            async with self.sessionmaker() as s:
+                chat = await s.scalar(select(Chat).where(Chat.account_id == account_id, Chat.peer_id == peer_id))
+                if chat is not None and chat.access_hash != ah:
+                    chat.access_hash = ah
+                    await s.commit()
+        return ah
+
     async def _maybe_download_fan_media(self, account_id: int, peer_id: str, req: dict) -> str | None:
         media: Message | None = req["media"]
         if media is None or not self._media_allowed(req["media_counter"]):
@@ -384,7 +407,7 @@ class AiEngine:
         if client is None:
             return None
         try:
-            got = await client.download_message_media(int(peer_id), media.tg_msg_id, self.media_dir)
+            got = await client.download_message_media(int(peer_id), media.tg_msg_id, self.media_dir, access_hash=req.get("access_hash"))
         except Exception:
             log.exception("fan media download failed account=%s peer=%s", account_id, peer_id)
             return None
@@ -479,14 +502,16 @@ class AiEngine:
             await s.commit()
 
     # ── sending ──────────────────────────────────────────────────────────────
-    async def _send(self, account_id: int, peer_id: str, resp: CapitalResponse) -> None:
+    async def _send(self, account_id: int, peer_id: str, resp: CapitalResponse, access_hash: int | None = None) -> None:
         client = self.manager.get(account_id)
         if client is None:
             return
         peer = int(peer_id)
         cps = await self._typing_cps()
+        # mark_read / typing / set_online are cosmetic: a failure (e.g. no entity after a restart)
+        # must never stop us from sending the actual reply.
         try:
-            await client.mark_read(peer)
+            await client.mark_read(peer, access_hash=access_hash)
         except Exception:
             log.warning("mark_read failed account=%s peer=%s", account_id, peer_id)
         try:
@@ -496,19 +521,25 @@ class AiEngine:
         for item in resp.content:
             try:
                 if item.type == "text":
-                    await client.typing(peer, min(TYPING_CAP_SEC, max(0.5, len(item.content) / cps)))
-                    mid = await client.send_text(peer, item.content)
+                    try:
+                        await client.typing(peer, min(TYPING_CAP_SEC, max(0.5, len(item.content) / cps)), access_hash=access_hash)
+                    except Exception:
+                        log.warning("typing failed account=%s peer=%s; sending anyway", account_id, peer_id)
+                    mid = await client.send_text(peer, item.content, access_hash=access_hash)
                     kind, text = "text", item.content
                 else:
-                    mid = await self._send_media(client, peer, item)
+                    mid = await self._send_media(client, peer, item, access_hash)
                     if mid is None:
                         continue
                     kind, text = item.type, None
             except Exception:
                 # Never resend a reply: stop this chat's sequence and let the next fan message retrigger.
                 log.exception("send failed account=%s peer=%s; stopping sequence", account_id, peer_id)
+                detail = "a reply piece failed to send"
+                if access_hash is None:
+                    detail = "can't reach this chat (no access hash yet) — will retry once the entity cache warms"
                 async with self.sessionmaker() as s:
-                    await self._log(s, "warn", "ai_send_failed", f"@{peer_id}: a reply piece failed to send", account_id)
+                    await self._log(s, "warn", "ai_send_failed", f"@{peer_id}: {detail}", account_id)
                     await s.commit()
                 return
             await self.service_record(account_id, peer_id, mid, kind, text, utcnow())
@@ -516,7 +547,7 @@ class AiEngine:
     # set by main.lifespan to Service.record_ai_message (keeps ai.py free of a hard service import)
     service_record = None  # type: ignore[assignment]
 
-    async def _send_media(self, client, peer: int, item) -> int | None:
+    async def _send_media(self, client, peer: int, item, access_hash: int | None = None) -> int | None:
         path, temp = await self._resolve_media(item.content)
         if path is None:
             async with self.sessionmaker() as s:
@@ -528,11 +559,11 @@ class AiEngine:
                 voice = await self._to_voice(path)
                 if voice is not None:
                     try:
-                        return await client.send_file(peer, str(voice), voice=True)
+                        return await client.send_file(peer, str(voice), voice=True, access_hash=access_hash)
                     finally:
                         voice.unlink(missing_ok=True)
-                return await client.send_file(peer, str(path))  # ffmpeg unavailable → plain audio file
-            return await client.send_file(peer, str(path))
+                return await client.send_file(peer, str(path), access_hash=access_hash)  # ffmpeg unavailable → plain audio file
+            return await client.send_file(peer, str(path), access_hash=access_hash)
         finally:
             if temp:
                 path.unlink(missing_ok=True)

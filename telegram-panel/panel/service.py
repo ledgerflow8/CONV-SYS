@@ -145,6 +145,8 @@ class Service:
             chat.peer_username = chat.peer_username or msg.peer.username
             chat.peer_name = chat.peer_name or msg.peer.name
             chat.peer_phone = chat.peer_phone or msg.peer.phone
+            if msg.peer.access_hash is not None:
+                chat.access_hash = msg.peer.access_hash  # refresh: it's how we reach them after a restart
 
             # First inbound sets the real conversation start (read from Telegram history once).
             if chat.first_in_at is None and not msg.out:
@@ -290,7 +292,7 @@ class Service:
                 client = self.manager.get(account_id)
                 if client is not None:
                     try:
-                        pc = await client.get_peer_country(int(peer_id))
+                        pc = await client.get_peer_country(int(peer_id), access_hash=chat.access_hash)
                     except TgError as e:
                         log.debug("peer-country lookup failed account=%s peer=%s: %s", account_id, peer_id, e.detail)
                         return {"country": None, "source": "hidden"}  # transient (e.g. FloodWait): don't cache, retry later
@@ -360,6 +362,45 @@ class Service:
             )
         )
         return True
+
+    async def warm_access_hashes(self) -> int:
+        """Warm each connected account's entity cache from its dialogs and store every peer's
+        access_hash, so replies to chats from before this run (the StringSession drops the cache on
+        restart) work immediately. Idempotent, best-effort, runs in the background at startup."""
+        updated = 0
+        async with self.sessionmaker() as session:
+            account_ids = [a.id for a in (await session.scalars(select(Account))).all()]
+        for account_id in account_ids:
+            client = self.manager.get(account_id)
+            if client is None:
+                continue
+            try:
+                pairs = await client.peer_access_hashes()
+            except TgError as e:
+                log.debug("warm_access_hashes: account %s: %s", account_id, e.detail)
+                continue
+            except Exception:
+                log.exception("warm_access_hashes failed for account %s", account_id)
+                continue
+            if not pairs:
+                continue
+            hashes = {pid: ah for pid, ah in pairs}
+            async with self.sessionmaker() as session:
+                chats = (
+                    await session.scalars(
+                        select(Chat).where(Chat.account_id == account_id, Chat.peer_id.in_(list(hashes.keys())))
+                    )
+                ).all()
+                for chat in chats:
+                    ah = hashes.get(chat.peer_id)
+                    if ah is not None and chat.access_hash != ah:
+                        chat.access_hash = ah
+                        updated += 1
+                if updated:
+                    await session.commit()
+        if updated:
+            log.info("warm_access_hashes: stored %s peer access_hash(es)", updated)
+        return updated
 
     async def backfill_leads(self) -> int:
         """One-time (idempotent) sweep: make a Lead for every already-converted chat that has none,

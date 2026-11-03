@@ -71,6 +71,7 @@ class PeerInfo:
     username: str | None  # lowercase, no @
     name: str | None
     phone: str | None  # E.164 with +, when Telegram shows it
+    access_hash: int | None = None  # needed to reach the peer after a restart (InputPeerUser)
 
 
 @dataclass(frozen=True)
@@ -178,12 +179,17 @@ class TgClient(Protocol):
     async def wait_disconnected(self) -> TgError | None: ...
     def session_string(self) -> str: ...
     def on_private_message(self, cb: MessageCallback) -> None: ...
-    # Sending (step 3, used by the AI worker). Each returns the sent message's Telegram id.
-    async def send_text(self, peer_id: int, text: str) -> int: ...
-    async def send_file(self, peer_id: int, path: str, *, voice: bool = False) -> int: ...
-    async def mark_read(self, peer_id: int) -> None: ...
-    async def typing(self, peer_id: int, seconds: float) -> None: ...
-    async def download_message_media(self, peer_id: int, tg_msg_id: int, dest_dir: Path) -> Path | None: ...
+    # Sending (step 3, used by the AI worker). Each returns the sent message's Telegram id. `access_hash`
+    # lets us build an InputPeerUser that works after a restart (the StringSession has no entity cache).
+    async def send_text(self, peer_id: int, text: str, access_hash: int | None = None) -> int: ...
+    async def send_file(self, peer_id: int, path: str, *, voice: bool = False, access_hash: int | None = None) -> int: ...
+    async def mark_read(self, peer_id: int, access_hash: int | None = None) -> None: ...
+    async def typing(self, peer_id: int, seconds: float, access_hash: int | None = None) -> None: ...
+    async def download_message_media(self, peer_id: int, tg_msg_id: int, dest_dir: Path, access_hash: int | None = None) -> Path | None: ...
+    # Resolve a peer's access_hash from the live entity cache (warmed by dialogs/recent messages), or None.
+    async def resolve_access_hash(self, peer_id: int) -> int | None: ...
+    # Warm the entity cache from dialogs and return (peer_id, access_hash) for every user dialog.
+    async def peer_access_hashes(self, limit: int | None = None) -> list[tuple[str, int]]: ...
     # Recovery: read recent private chats back from Telegram (read-only; raises TgError).
     async def recent_peers(self, since: datetime) -> list[PeerInfo]: ...
     async def scan_chat(self, peer_id: int, since: datetime) -> ChatScan: ...
@@ -204,7 +210,7 @@ class TgClient(Protocol):
     async def set_privacy(self, rules: dict[str, str]) -> None: ...
     async def delete_all_stories(self) -> int: ...
     async def remove_profile_music(self) -> int: ...
-    async def get_peer_country(self, peer_id: int) -> str | None: ...
+    async def get_peer_country(self, peer_id: int, access_hash: int | None = None) -> str | None: ...
 
 
 ClientFactory = Callable[[ConnectParams], TgClient]
@@ -224,6 +230,7 @@ def _peer_info(user: types.User) -> PeerInfo:
         username=username.lower() if username else None,
         name=name,
         phone=f"+{user.phone}" if user.phone else None,
+        access_hash=getattr(user, "access_hash", None),
     )
 
 
@@ -356,25 +363,55 @@ class TelethonClient:
         return self._c.session.save()
 
     # ── sending (step 3) ──────────────────────────────────────────────────────
-    async def send_text(self, peer_id: int, text: str) -> int:
-        m = await self._c.send_message(peer_id, text)
+    def _peer(self, peer_id: int, access_hash: int | None):
+        """An InputPeerUser when we know the access_hash (works with no entity cache, i.e. after a
+        restart), else the bare id (lets Telethon try its in-memory cache)."""
+        if access_hash is not None:
+            return types.InputPeerUser(int(peer_id), int(access_hash))
+        return int(peer_id)
+
+    async def send_text(self, peer_id: int, text: str, access_hash: int | None = None) -> int:
+        m = await self._c.send_message(self._peer(peer_id, access_hash), text)
         return m.id
 
-    async def send_file(self, peer_id: int, path: str, *, voice: bool = False) -> int:
-        m = await self._c.send_file(peer_id, path, voice_note=voice)
+    async def send_file(self, peer_id: int, path: str, *, voice: bool = False, access_hash: int | None = None) -> int:
+        m = await self._c.send_file(self._peer(peer_id, access_hash), path, voice_note=voice)
         return m.id
 
-    async def mark_read(self, peer_id: int) -> None:
-        await self._c.send_read_acknowledge(peer_id)
+    async def mark_read(self, peer_id: int, access_hash: int | None = None) -> None:
+        await self._c.send_read_acknowledge(self._peer(peer_id, access_hash))
 
-    async def typing(self, peer_id: int, seconds: float) -> None:
+    async def typing(self, peer_id: int, seconds: float, access_hash: int | None = None) -> None:
         if seconds <= 0:
             return
-        async with self._c.action(peer_id, "typing"):
+        async with self._c.action(self._peer(peer_id, access_hash), "typing"):
             await asyncio.sleep(seconds)
 
-    async def download_message_media(self, peer_id: int, tg_msg_id: int, dest_dir: Path) -> Path | None:
-        msg = await self._c.get_messages(peer_id, ids=tg_msg_id)
+    async def resolve_access_hash(self, peer_id: int) -> int | None:
+        """The peer's access_hash from Telethon's in-memory entity cache (warmed by dialogs or a recent
+        message this run), or None. Best-effort: never raises."""
+        try:
+            ent = await self._c.get_input_entity(int(peer_id))
+        except Exception:
+            return None
+        return getattr(ent, "access_hash", None)
+
+    async def peer_access_hashes(self, limit: int | None = None) -> list[tuple[str, int]]:
+        """Warm the entity cache from dialogs and return (peer_id, access_hash) for each user dialog,
+        so replies to chats from before this run work immediately (StringSession has no entity cache)."""
+        out: list[tuple[str, int]] = []
+        try:
+            async for d in self._c.iter_dialogs(limit=limit):
+                if d.is_user and _is_fan(d.entity):
+                    ah = getattr(d.entity, "access_hash", None)
+                    if ah is not None:
+                        out.append((str(d.entity.id), int(ah)))
+        except Exception as e:
+            raise classify(e) from e
+        return out
+
+    async def download_message_media(self, peer_id: int, tg_msg_id: int, dest_dir: Path, access_hash: int | None = None) -> Path | None:
+        msg = await self._c.get_messages(self._peer(peer_id, access_hash), ids=tg_msg_id)
         if msg is None or not msg.media:
             return None
         size = getattr(msg.file, "size", None) if msg.file else None
@@ -624,13 +661,15 @@ class TelethonClient:
                 pass  # needs a full access-hash we don't have; leave it rather than fail the whole clean-up
         return removed
 
-    async def get_peer_country(self, peer_id: int) -> str | None:
+    async def get_peer_country(self, peer_id: int, access_hash: int | None = None) -> str | None:
         """The sender's phone country from Telegram's PeerSettings card (shown for new chats from
         non-contacts even when the number is hidden), as an ISO-2 code, or None. Our Telethon layer
         (229) includes PeerSettings.phone_country, so no raw/layer workaround is needed. This is a
         plain request, not an update, so it never hits the TypeNotFoundError (newer-layer) path."""
         try:
-            peer = await self._c.get_input_entity(peer_id)  # cached from the fan's messages
+            # Build the peer from the stored access_hash so it works after a restart; fall back to the
+            # entity cache (a recent message from this fan) when we don't have one yet.
+            peer = self._peer(peer_id, access_hash) if access_hash is not None else await self._c.get_input_entity(peer_id)
             res = await self._c(functions.messages.GetPeerSettingsRequest(peer=peer))
         except Exception as e:
             raise classify(e) from e
