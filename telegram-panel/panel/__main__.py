@@ -1,5 +1,5 @@
 """CLI: python -m panel gen-key | set-password | disk | recover --since <ISO time UTC> [--apply]
-       | reprocess-tierfiltered [--apply]
+       | reprocess-tierfiltered [--apply] | audit-qualified --since <ISO time UTC> [--live]
 
   disk                    What fills DATA_DIR (read-only).
   recover                 Ask the RUNNING panel (on this machine) to re-scan chats since a time and
@@ -7,6 +7,10 @@
                           It never connects to Telegram itself: the panel's own connections do the reading.
   reprocess-tierfiltered  Ask the RUNNING panel to re-open chats stopped as tierFiltered whose own
                           country is a confirmed Tier-1 and re-queue a reply. Dry run without --apply.
+  audit-qualified         Read-only. Ask the RUNNING panel which chats it reported to the portal as
+                          replied since a time had no AI reply delivered. --live also reads each such
+                          chat from Telegram to see whether anything at all was sent. Writes a CSV to
+                          DATA_DIR/audit/.
 """
 
 import asyncio
@@ -101,6 +105,8 @@ def _recover(args: list[str]) -> int:
     print(f"Chats scanned: {t['chats_scanned']}  messages restored: {t['messages_restored']}")
     print(f"Missing events {'queued' if apply else 'that would be queued'}: {t['first_events']} new convos, {t['reply_events']} replies")
     print(f"Chats whose last message is the fan's (no reply yet): {t['unanswered']}")
+    if t.get("no_ai_reply"):
+        print(f"Chats with a reply but no record of the AI sending it (left Pending): {t['no_ai_reply']}")
     for a in job["accounts"]:
         if a["error"]:
             print(f"  @{a['username'] or a['account_id']}: {a['error']}")
@@ -166,6 +172,56 @@ def _reprocess(args: list[str]) -> int:
     return 0
 
 
+def _audit(args: list[str]) -> int:
+    import time
+
+    if "--since" not in args or args.index("--since") + 1 >= len(args):
+        print("Usage: python -m panel audit-qualified --since 2026-10-26T00:00:00Z [--live]", file=sys.stderr)
+        return 2
+    since = args[args.index("--since") + 1]
+    live = "--live" in args
+    client, base = _panel_client()
+    url = f"{base}/audit-qualified"
+    with client as c:
+        r = c.post(url, json={"since": since, "live": live})
+        if r.status_code != 200:
+            print(f"Panel refused: {r.status_code} {r.text}", file=sys.stderr)
+            return 1
+        print(f"Auditing chats reported as replied since {since}" + (" (reading Telegram live)" if live else "") + " …")
+        while True:
+            job = c.get(url).json()["audit"]
+            if job["live"]:
+                print(f"  Telegram checks {job['live_done']}/{job['live_total']}", end="\r", flush=True)
+            if not job["running"]:
+                break
+            time.sleep(3)
+    print()
+    if job["error"]:
+        print(f"Error: {job['error']}", file=sys.stderr)
+        return 1
+    cols = ("reported", "ai_reply", "no_ai_reply") + (("no_outgoing",) if job["live"] else ())
+
+    def table(title: str, rows: dict) -> None:
+        print(f"\n{title:<24}" + "".join(f"{c:>13}" for c in cols))
+        for k, b in rows.items():
+            print(f"{k:<24}" + "".join(f"{b[c]:>13,}" for c in cols))
+        print(f"{'TOTAL':<24}" + "".join(f"{job['totals'][c]:>13,}" for c in cols))
+
+    table("By account", {f"@{k}": v for k, v in job["by_account"].items()})
+    table("By day (UTC, replied)", job["by_day"])
+    print("\nreported    = chats the panel reported to the portal as replied")
+    print("ai_reply    = an AI reply was delivered (AI log or stored AI message)")
+    print("no_ai_reply = no record of any AI reply: the portal may have qualified these without an AI chat")
+    if job["live"]:
+        print("no_outgoing = of those, Telegram shows nothing at all sent after the fan's first message")
+    else:
+        print("Re-run with --live to check each no_ai_reply chat in Telegram (has_outgoing in the CSV).")
+    for n in job["notes"]:
+        print(f"  note: {n}")
+    print(f"\nCSV of the no_ai_reply chats: {job['csv_path']}")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     cmd = argv[1] if len(argv) > 1 else ""
     if cmd == "gen-key":
@@ -189,6 +245,8 @@ def main(argv: list[str]) -> int:
         return _recover(argv[2:])
     if cmd == "reprocess-tierfiltered":
         return _reprocess(argv[2:])
+    if cmd == "audit-qualified":
+        return _audit(argv[2:])
     print(__doc__, file=sys.stderr)
     return 2
 

@@ -10,11 +10,11 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from panel import portal, tier
+from panel import ailog, portal, tier
 from panel.accounts import AccountManager
 from panel.crypto import Crypto, InvalidToken
 from panel.db import get_setting
-from panel.models import Account, Activity, Chat, Lead, Message, Profile, utcnow
+from panel.models import Account, Activity, AiEvent, Chat, Lead, Message, Profile, utcnow
 from panel.tg.client import AccountInfo, ConnectParams, IncomingMessage, TgError
 
 # Internal account status → the portal's account_status enum (PLAN.md §4.4).
@@ -150,35 +150,42 @@ class Service:
 
             # First inbound sets the real conversation start (read from Telegram history once).
             if chat.first_in_at is None and not msg.out:
-                first_in, first_reply = await self._dialog_firsts(account_id, msg.peer.peer_id, fallback=msg.at)
-                chat.first_in_at = first_in
-                if first_reply is not None and chat.first_reply_at is None:
-                    chat.first_reply_at = first_reply
+                chat.first_in_at, _ = await self._dialog_firsts(account_id, msg.peer.peer_id, fallback=msg.at)
 
-            # First reply at or after the first inbound (AI or typed by hand).
+            # An outgoing message seen before any inbound (e.g. connected mid-chat): backfill the real
+            # start from history, but only if the fan actually messaged first, so a cold outreach never
+            # becomes a convo.
             if msg.out and chat.first_in_at is None:
-                # We saw our reply before any inbound event (e.g. connected mid-chat). Backfill the
-                # real start from history — but only if the fan actually messaged first, so a cold
-                # outreach never becomes a convo. This keeps a replied convo from staying Pending.
-                first_in, first_reply = await self._dialog_firsts_raw(account_id, msg.peer.peer_id)
+                first_in, _ = await self._dialog_firsts_raw(account_id, msg.peer.peer_id)
                 if first_in is not None:
                     chat.first_in_at = first_in
-                    chat.first_reply_at = chat.first_reply_at or first_reply or msg.at
-            elif msg.out and chat.first_in_at is not None and chat.first_reply_at is None and msg.at >= chat.first_in_at:
-                chat.first_reply_at = msg.at
 
+            # Qualify rule (client 2026-11-05): an outgoing message seen here never sets first_reply_at.
+            # It may be typed on a phone, sent by another session on the account, or a Telegram
+            # auto-message; none of that is an AI chat. Only record_ai_message (an AI reply from a clean
+            # Capitalbot response, delivered to Telegram) marks the chat replied.
             await self._report_chat(session, acc, chat)
             # A fresh fan message on an AI-enabled account wakes the debounced AI worker (step 3).
             should_ai = (not msg.out) and acc.ai_on and acc.power_on and acc.profile_id is not None
+            if not msg.out:
+                await ailog.log_event(session, account_id, msg.peer.peer_id, ailog.FAN_MSG, text=msg.text or f"[{msg.kind}]")
+                if not should_ai:
+                    why = "AI is off for this account" if not acc.ai_on else "no persona set" if acc.profile_id is None else "account powered off"
+                    await ailog.log_event(session, account_id, msg.peer.peer_id, ailog.AI_SKIPPED, ailog.AI_OFF, error=why, collapse=True)
             await session.commit()
 
         if should_ai and self.ai is not None:
             self.ai.notify(account_id, msg.peer.peer_id)
 
-    async def record_ai_message(self, account_id: int, peer_id: str, tg_msg_id: int, kind: str, text: str | None, at: datetime) -> None:
-        """Store an outgoing AI message after Telegram accepted it, and roll the chat/account forward
-        the same way an inbound message would (so first-reply reporting fires). Idempotent, and it
-        relabels a row the outgoing-message listener may have stored first as `manual`."""
+    async def record_ai_message(
+        self, account_id: int, peer_id: str, tg_msg_id: int, kind: str, text: str | None, at: datetime, status: str = ailog.OK
+    ) -> None:
+        """Store an outgoing AI message after Telegram accepted it, log it as ai_reply_sent, and roll
+        the chat/account forward. Idempotent, and it relabels a row the outgoing-message listener may
+        have stored first as `manual`.
+
+        This is the only place a chat becomes replied for the portal (qualify rule, client 2026-11-05),
+        and only when `status` is ok: a reply that came with aiCreditOver / tierFiltered never counts."""
         async with self.sessionmaker() as session:
             acc = await session.get(Account, account_id)
             if acc is None:
@@ -194,10 +201,11 @@ class Service:
                 session.add(
                     Message(account_id=account_id, peer_id=peer_id, tg_msg_id=tg_msg_id, direction="out", sender="ai", kind=kind, text=text, at=at)
                 )
+            await ailog.log_event(session, account_id, peer_id, ailog.AI_REPLY_SENT, status, text=text or f"[{kind}]")
             chat = await session.scalar(select(Chat).where(Chat.account_id == account_id, Chat.peer_id == peer_id))
             if chat is not None:
                 chat.last_out_at = _later(chat.last_out_at, at)
-                if chat.first_in_at is not None and chat.first_reply_at is None and at >= chat.first_in_at:
+                if status == ailog.OK and chat.first_in_at is not None and chat.first_reply_at is None and at >= chat.first_in_at:
                     chat.first_reply_at = at
                 await self._report_chat(session, acc, chat)
             acc.last_msg_at = _later(acc.last_msg_at, at)
@@ -223,6 +231,31 @@ class Service:
                 at=msg.at,
             )
         )
+
+    async def ai_reply_at(self, session: AsyncSession, account_id: int, peer_id: str, since: datetime) -> datetime | None:
+        """When the AI first delivered a qualifying reply in this chat at or after `since`, from the
+        AI log (ai_reply_sent, ok) or, for replies from before the log existed, the stored AI message
+        rows (kept forever, text blanked after 30 days). None if there's no evidence of one.
+        After the log started a stored AI row isn't enough: it may be a reply that came back with
+        aiCreditOver / tierFiltered, which the log records as not ok."""
+        started = await get_setting(session, ailog.LOG_STARTED_AT)
+        before_log = [Message.at < datetime.fromisoformat(started)] if started else []
+        logged = await session.scalar(
+            select(AiEvent.created_at)
+            .where(
+                AiEvent.account_id == account_id, AiEvent.peer_id == peer_id, AiEvent.kind == ailog.AI_REPLY_SENT,
+                AiEvent.capital_status == ailog.OK, AiEvent.created_at >= since,
+            )
+            .order_by(AiEvent.created_at)
+            .limit(1)
+        )
+        stored = await session.scalar(
+            select(Message.at)
+            .where(Message.account_id == account_id, Message.peer_id == peer_id, Message.sender == "ai", Message.at >= since, *before_log)
+            .order_by(Message.at)
+            .limit(1)
+        )
+        return min((t for t in (logged, stored) if t is not None), default=None)
 
     async def _get_or_create_chat(self, session: AsyncSession, account_id: int, msg: IncomingMessage) -> Chat:
         chat = await session.scalar(

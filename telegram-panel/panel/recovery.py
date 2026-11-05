@@ -2,8 +2,13 @@
 `on_message` commit failed, so new chats, first replies and their portal events were lost.
 
 Re-reads each connected account's private chats active since `since` straight from Telegram,
-restores missing message rows (the AI's history), fills a chat's first-message / first-reply times
-when they're missing, and queues whatever portal events are now due through the normal outbox.
+restores missing message rows (the AI's history), fills a chat's first-message time when it's
+missing, and queues whatever portal events are now due through the normal outbox.
+
+A reply is only marked when there's evidence the AI delivered it (the AI log or a stored AI message;
+qualify rule, client 2026-11-05). An outgoing message in Telegram's history alone may be typed by hand,
+another session or a pre-panel reply, so those chats are counted (`no_ai_reply`) and left Pending;
+the Director decides them on the portal.
 Idempotent: chats already reported are left alone (`reported_first` / `reported_reply`), and the
 portal dedupes on (account, fan) anyway, so running it twice changes nothing.
 
@@ -36,6 +41,7 @@ class AccountResult:
     messages_restored: int = 0
     first_events: int = 0  # "new convo" events queued that were missing
     reply_events: int = 0  # "replied" events queued that were missing
+    no_ai_reply: int = 0  # chats with an outgoing message after the fan's but no evidence the AI sent it
     unanswered: int = 0  # chats whose newest message is from the fan (no reply since)
     error: str | None = None
 
@@ -55,7 +61,7 @@ class RecoveryJob:
         return self.finished_at is None
 
     def as_dict(self) -> dict:
-        totals = {k: sum(getattr(a, k) for a in self.accounts) for k in ("chats_scanned", "messages_restored", "first_events", "reply_events", "unanswered")}
+        totals = {k: sum(getattr(a, k) for a in self.accounts) for k in ("chats_scanned", "messages_restored", "first_events", "reply_events", "no_ai_reply", "unanswered")}
         return {
             "since": self.since.isoformat(),
             "dry_run": self.dry_run,
@@ -156,7 +162,11 @@ async def _recover_account(service: Service, account_id: int, job: RecoveryJob, 
             chat.peer_phone = chat.peer_phone or scan.peer.phone
             chat.first_in_at = chat.first_in_at or scan.first_in
             if chat.first_reply_at is None and scan.first_reply is not None:
-                chat.first_reply_at = scan.first_reply
+                ai_at = await service.ai_reply_at(s, account_id, peer.peer_id, chat.first_in_at)
+                if ai_at is not None:
+                    chat.first_reply_at = ai_at
+                else:
+                    res.no_ai_reply += 1
             for m in scan.recent:
                 if m.out:
                     chat.last_out_at = _later(chat.last_out_at, m.at)

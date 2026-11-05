@@ -136,4 +136,4 @@ def test_settings_roundtrip_and_validation(client):
 
 def test_status_has_ai_block(client):
     ai = client.get("/api/system/status").json()["ai"]
-    assert ai == {"configured": False, "global_on": True, "credit_over_until": None, "last_error": None}
+    assert ai == {"configured": False, "global_on": True, "kill_switch": False, "credits_out": False, "credit_over_until": None, "last_error": None}

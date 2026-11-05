@@ -22,7 +22,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from panel import tier
+from panel import ailog, tier
 from panel.capital import KIND_MARKERS, UPLOADABLE_KINDS, CapitalClient, CapitalError, CapitalResponse
 from panel.crypto import Crypto
 from panel.db import get_setting
@@ -79,6 +79,15 @@ def build_chat_history(msgs: list[Message], *, max_messages: int = HISTORY_MESSA
     return items
 
 
+def _capital_status(resp: CapitalResponse) -> str:
+    """The ai_events capital_status for a 200 response. Only `ok` replies can qualify a convo."""
+    if resp.flag("aiCreditOver"):
+        return ailog.CREDIT_OVER
+    if resp.flag("tierFiltered"):
+        return ailog.TIER_FILTERED
+    return ailog.OK
+
+
 def merged_overrides(profile: Profile, account: Account) -> dict:
     """Profile persona overrides, with the account's own overrides layered on top (PLAN.md §3)."""
     out = dict(profile.overrides or {})
@@ -111,6 +120,9 @@ class AiEngine:
         self._watchdog_seen: dict[tuple[int, str], datetime] = {}  # last watchdog re-attempt per chat
         self._chat_locks: dict[tuple[int, str], asyncio.Lock] = {}
         self.credit_over_until: datetime | None = None
+        # True from an aiCreditOver until a call comes back without it (drives the "credits empty"
+        # banner). Unlike credit_over_until it doesn't lapse between re-probes.
+        self.credits_out = False
         self.credit_probe = CREDIT_OVER_PAUSE  # re-probe cadence while paused (overridable in tests)
         self.last_error: str | None = None
         # set by main.lifespan to Service.report_ai_outcome; reports the chat's convo state (and a
@@ -164,7 +176,7 @@ class AiEngine:
         # Pop before running so that, if the chat is still paused, _run_turn can arm the next probe.
         self._retries.pop(key, None)
         try:
-            await self.run_turn(account_id, peer_id)
+            await self.run_turn(account_id, peer_id, trigger="reprobe")
         except Exception:
             log.exception("AI credit re-probe failed for account=%s peer=%s", account_id, peer_id)
 
@@ -194,8 +206,8 @@ class AiEngine:
         now = utcnow()
         self._watchdog_seen = {k: v for k, v in self._watchdog_seen.items() if now - v < WATCHDOG_RETRY_EVERY}
         async with self.sessionmaker() as s:
-            if not await get_setting(s, "ai_global_on", True):
-                return
+            if not await get_setting(s, ailog.AI_GLOBAL_ON, True):
+                return  # kill switch on
             rows = (
                 await s.scalars(select(Chat).where(Chat.ai_state.in_(KEEP_CALLING), Chat.last_in_at.is_not(None)))
             ).all()
@@ -221,7 +233,7 @@ class AiEngine:
         for account_id, peer_id in due:
             self._watchdog_seen[(account_id, peer_id)] = now
             try:
-                await self.run_turn(account_id, peer_id)
+                await self.run_turn(account_id, peer_id, trigger="watchdog")
             except Exception:
                 log.exception("watchdog turn failed account=%s peer=%s", account_id, peer_id)
             await asyncio.sleep(WATCHDOG_GAP_SEC)
@@ -230,18 +242,32 @@ class AiEngine:
             await s.commit()
 
     # ── one turn for one chat ──────────────────────────────────────────────────
-    async def run_turn(self, account_id: int, peer_id: str) -> None:
+    async def run_turn(self, account_id: int, peer_id: str, trigger: str = "fan") -> None:
+        """One AI turn. `trigger` (fan · watchdog · reprobe · reprocess) is noted on the ai_request row."""
         lock = self._chat_locks.setdefault((account_id, peer_id), asyncio.Lock())
         async with lock:
-            await self._run_turn(account_id, peer_id)
+            await self._run_turn(account_id, peer_id, trigger)
 
-    async def _run_turn(self, account_id: int, peer_id: str) -> None:
+    async def _event(self, account_id: int, peer_id: str, kind: str, status: str | None, *, text=None, error=None, collapse=False) -> None:
+        async with self.sessionmaker() as s:
+            await ailog.log_event(s, account_id, peer_id, kind, status, text=text, error=error, collapse=collapse)
+            await s.commit()
+
+    async def _run_turn(self, account_id: int, peer_id: str, trigger: str = "fan") -> None:
         if not self.capital.configured:
+            return
+        async with self.sessionmaker() as s:
+            killed = not await get_setting(s, ailog.AI_GLOBAL_ON, True)
+        if killed:
+            # The global kill switch: no Capitalbot call of any kind. The watchdog picks the chat up
+            # again once it's switched back off.
+            await self._event(account_id, peer_id, ailog.AI_SKIPPED, ailog.KILL_SWITCH, error="AI kill switch is on", collapse=True)
             return
         if self.credit_over_until and utcnow() < self.credit_over_until:
             # Don't drop this fan turn: re-probe this chat when the pause lifts, so it resumes on its
             # own even if no new fan message ever arrives (client feedback 2026-11-02, defects A & B).
             self._schedule_retry(account_id, peer_id, self.credit_over_until)
+            await self._event(account_id, peer_id, ailog.AI_SKIPPED, ailog.CREDIT_OVER, error="Capitalbot credits empty; AI paused, re-probing", collapse=True)
             return
         req = await self._gather(account_id, peer_id)
         if req is None:
@@ -266,16 +292,26 @@ class AiEngine:
                     file_path=file_path,
                 )
         except CapitalError as e:
-            await self._on_error(account_id, peer_id, e)
+            await self._on_error(account_id, peer_id, e, trigger, req.get("fan_text"))
             return
         finally:
             if file_path:
                 Path(file_path).unlink(missing_ok=True)
 
         self.last_error = None
+        status = _capital_status(resp)
+        flags = [n for n, v in resp.flags.items() if v]
+        await self._event(
+            account_id, peer_id, ailog.AI_REQUEST, status,
+            text=f"[{trigger}] " + (f"flags: {', '.join(flags)} · " if flags else "") + f"{len(resp.content)} piece(s)\nfan: {req.get('fan_text') or '—'}",
+        )
         answered = await self._apply(account_id, peer_id, resp, uploaded=bool(file_path), out_before=req["out_before"])
-        if resp.has_content and not answered and self.manager.is_connected(account_id):
-            await self._send(account_id, peer_id, resp, req.get("access_hash"))
+        if resp.has_content and answered:
+            await self._event(account_id, peer_id, ailog.AI_SKIPPED, status, error="reply dropped: the chat was answered since the fan's message")
+        elif resp.has_content and not self.manager.is_connected(account_id):
+            await self._event(account_id, peer_id, ailog.AI_SKIPPED, status, error="reply not sent: the account disconnected")
+        elif resp.has_content:
+            await self._send(account_id, peer_id, resp, req.get("access_hash"), status)
         # Report the convo outcome to the portal — crucially, a tierFiltered verdict sends no reply,
         # so this is the only path that reports it (→ rejected non_tier1 instead of stuck Pending).
         if self.report_ai_outcome is not None:
@@ -285,9 +321,12 @@ class AiEngine:
         """Re-check eligibility against fresh state and assemble the request inputs."""
         async with self.sessionmaker() as s:
             acc = await s.get(Account, account_id)
-            if acc is None or not acc.power_on or not acc.ai_on or acc.profile_id is None:
+            if acc is None:
                 return None
-            if not await get_setting(s, "ai_global_on", True):
+            if not acc.power_on or not acc.ai_on or acc.profile_id is None:
+                why = "account powered off" if not acc.power_on else "AI is off for this account" if not acc.ai_on else "no persona set"
+                await ailog.log_event(s, account_id, peer_id, ailog.AI_SKIPPED, ailog.AI_OFF, error=why, collapse=True)
+                await s.commit()
                 return None
             if not self.manager.is_connected(account_id):
                 return None  # can't send a reply while disconnected
@@ -310,6 +349,7 @@ class AiEngine:
                 # (sent on the first convo event) and rejects it as non_tier1 on its own.
                 chat.ai_state, chat.ai_state_reason = "filtered", "non_tier1"
                 await self._log(s, "info", "tier_skipped", f"@{peer_id}: non-Tier-1 phone — not sent to AI", account_id)
+                await ailog.log_event(s, account_id, peer_id, ailog.AI_SKIPPED, ailog.TIER_FILTERED, error="non-Tier-1 phone (panel pre-filter); not sent to Capitalbot")
                 await s.commit()
                 return None
             if gate == tier.SKIP:
@@ -332,6 +372,7 @@ class AiEngine:
             history = build_chat_history(msgs)
             if not history:
                 return None
+            fan_text = next((m.text or KIND_MARKERS.get(m.kind, m.kind) for m in reversed(msgs) if m.direction == "in"), None)
             user_infos = {"useridentifier": peer_id}
             if chat.peer_name:
                 user_infos["name"] = chat.peer_name
@@ -348,6 +389,7 @@ class AiEngine:
                 "media": self._pick_fan_media(msgs, chat.last_out_at),
                 "media_counter": dict(chat.media_uploads or {}),
                 "access_hash": chat.access_hash,
+                "fan_text": fan_text,
             }
 
     async def _resolve_country(self, chat: Chat) -> dict:
@@ -445,16 +487,18 @@ class AiEngine:
             if note:
                 await self._log(s, "info" if note[0] else "warn", "ai_flag", f"@{peer_id}: {note[1]}", account_id)
             if resp.flag("aiCreditOver"):
+                self.credits_out = True
                 self.credit_over_until = utcnow() + self.credit_probe
                 mins = max(1, round(self.credit_probe.total_seconds() / 60))
                 await self._log(s, "error", "ai_credit_over", f"Capitalbot AI credits are depleted; pausing AI and re-probing every {mins} min until they return", account_id)
                 # Arm the re-probe from the chat that hit depletion, so credits auto-resume even with
                 # no further fan traffic (client feedback 2026-11-02, defect B).
                 self._schedule_retry(account_id, peer_id, self.credit_over_until)
-            elif self.credit_over_until is not None:
+            elif self.credit_over_until is not None or self.credits_out:
                 # A call went through without the flag → credits are back. Resume now, and log the end
                 # of the pause so its start/stop window is visible in the activity log (item 1).
                 self.credit_over_until = None
+                self.credits_out = False
                 await self._log(s, "info", "ai_credit_resume", "Capitalbot responded without the credits flag; AI resumed", account_id)
             if not resp.has_content and resp.stop_flag is None and not resp.flag("chatCooldown"):
                 # Empty content with no flag is a Capitalbot bug (docs): log it with the body.
@@ -490,7 +534,14 @@ class AiEngine:
             return (True, "un-converted — resuming")
         return None
 
-    async def _on_error(self, account_id: int, peer_id: str, e: CapitalError) -> None:
+    async def _on_error(self, account_id: int, peer_id: str, e: CapitalError, trigger: str = "fan", fan_text: str | None = None) -> None:
+        async with self.sessionmaker() as s:
+            if e.kind == "kill_switch":  # the switch flipped while this turn was being prepared
+                await ailog.log_event(s, account_id, peer_id, ailog.AI_SKIPPED, ailog.KILL_SWITCH, error=e.detail, collapse=True)
+                await s.commit()
+                return
+            await ailog.log_event(s, account_id, peer_id, ailog.AI_REQUEST, ailog.ERROR, text=f"[{trigger}]\nfan: {fan_text or '—'}", error=f"{e.kind}: {e.detail}")
+            await s.commit()
         self.last_error = f"{e.kind}: {e.detail}"
         async with self.sessionmaker() as s:
             level = "error" if e.pause or e.kind in ("server", "bad_response") else "warn"
@@ -502,7 +553,7 @@ class AiEngine:
             await s.commit()
 
     # ── sending ──────────────────────────────────────────────────────────────
-    async def _send(self, account_id: int, peer_id: str, resp: CapitalResponse, access_hash: int | None = None) -> None:
+    async def _send(self, account_id: int, peer_id: str, resp: CapitalResponse, access_hash: int | None = None, status: str = ailog.OK) -> None:
         client = self.manager.get(account_id)
         if client is None:
             return
@@ -540,9 +591,12 @@ class AiEngine:
                     detail = "can't reach this chat (no access hash yet) — will retry once the entity cache warms"
                 async with self.sessionmaker() as s:
                     await self._log(s, "warn", "ai_send_failed", f"@{peer_id}: {detail}", account_id)
+                    await ailog.log_event(s, account_id, peer_id, ailog.AI_SKIPPED, status, text=item.content if item.type == "text" else None, error=f"send failed: {detail}")
                     await s.commit()
                 return
-            await self.service_record(account_id, peer_id, mid, kind, text, utcnow())
+            # Records the message and the ai_reply_sent event; only a reply from a clean (ok) response
+            # counts as the chat's reply for the portal (qualify rule, client 2026-11-05).
+            await self.service_record(account_id, peer_id, mid, kind, text, utcnow(), status=status)
 
     # set by main.lifespan to Service.record_ai_message (keeps ai.py free of a hard service import)
     service_record = None  # type: ignore[assignment]

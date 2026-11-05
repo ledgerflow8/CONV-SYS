@@ -24,7 +24,7 @@ from sqlalchemy import bindparam, delete, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from panel.ai import HISTORY_MESSAGES
-from panel.models import Account, Activity, ImportJob, OutboxItem, UTCDateTime, utcnow
+from panel.models import Account, Activity, AiEvent, ImportJob, OutboxItem, UTCDateTime, utcnow
 
 log = logging.getLogger("panel.housekeeping")
 
@@ -35,6 +35,7 @@ OUTBOX_SENT_KEEP_DAYS = 7  # delivered rows; pending rows are never pruned
 OUTBOX_FAILED_KEEP_DAYS = 30
 ACTIVITY_KEEP_DAYS = 30
 IMPORT_KEEP_DAYS = 30
+AI_EVENTS_KEEP_DAYS = 90  # the AI message log: long enough to audit a few weekly payouts back
 MEDIA_MAX_AGE_SEC = 30 * 60  # nothing in ai_media is in use for longer than one AI turn
 AVATAR_MAX_BYTES = 2 * 1024 * 1024
 BATCH = 5000
@@ -53,6 +54,7 @@ class PruneResult:
     outbox_deleted: int = 0
     activity_deleted: int = 0
     imports_deleted: int = 0
+    ai_events_deleted: int = 0
     media_files_deleted: int = 0
     avatar_files_deleted: int = 0
 
@@ -172,8 +174,9 @@ async def prune_messages(session: AsyncSession, keep_days: int = MESSAGE_KEEP_DA
     return deleted, blanked
 
 
-async def prune_rows(session: AsyncSession) -> tuple[int, int, int]:
-    """Delivered/failed outbox rows, old activity and old import jobs. Pending outbox rows are kept."""
+async def prune_rows(session: AsyncSession) -> tuple[int, int, int, int]:
+    """Delivered/failed outbox rows, old activity, old import jobs and old AI log rows. Pending outbox
+    rows are kept."""
     now = utcnow()
     outbox = (
         await session.execute(
@@ -185,8 +188,9 @@ async def prune_rows(session: AsyncSession) -> tuple[int, int, int]:
     ).rowcount
     activity = (await session.execute(delete(Activity).where(Activity.at < now - timedelta(days=ACTIVITY_KEEP_DAYS)))).rowcount
     imports = (await session.execute(delete(ImportJob).where(ImportJob.created_at < now - timedelta(days=IMPORT_KEEP_DAYS)))).rowcount
+    ai_events = (await session.execute(delete(AiEvent).where(AiEvent.created_at < now - timedelta(days=AI_EVENTS_KEEP_DAYS)))).rowcount
     await session.commit()
-    return outbox or 0, activity or 0, imports or 0
+    return outbox or 0, activity or 0, imports or 0, ai_events or 0
 
 
 @dataclass
@@ -268,7 +272,7 @@ class Housekeeper:
         r.media_files_deleted = sweep_media(self.data_dir / "ai_media")
         async with self.sessionmaker() as session:
             r.messages_deleted, r.messages_blanked = await prune_messages(session)
-            r.outbox_deleted, r.activity_deleted, r.imports_deleted = await prune_rows(session)
+            r.outbox_deleted, r.activity_deleted, r.imports_deleted, r.ai_events_deleted = await prune_rows(session)
             r.avatar_files_deleted = await sweep_avatars(session, self.data_dir / "avatars")
             usage = disk_usage(self.data_dir)
             if usage["level"] != "ok":

@@ -41,6 +41,8 @@ class FakeAccount:
     # Full Telegram history per fan (peer id str → messages oldest first), for recovery scans.
     history: dict[str, list[IncomingMessage]] = field(default_factory=dict)
     scan_error: TgError | None = None  # raised by recent_peers (e.g. a long FloodWait)
+    # raised by first_exchange / recent_messages, popped one per call (e.g. a FloodWait, then success)
+    history_errors: list[TgError] = field(default_factory=list)
 
 
 class FakeClient:
@@ -95,6 +97,22 @@ class FakeClient:
         if self._fake:
             return self._fake.dialog_firsts.get(str(peer_id), (None, None))
         return (None, None)
+
+    async def first_exchange(self, peer_id: int, access_hash: int | None = None):
+        self.history_reads = getattr(self, "history_reads", 0) + 1
+        if self._fake and self._fake.history_errors:
+            raise self._fake.history_errors.pop(0)
+        msgs = self._fake.history.get(str(peer_id)) if self._fake else None
+        if msgs:
+            first_in = next((m.at for m in msgs if not m.out), None)
+            first_reply = next((m.at for m in msgs if m.out and first_in is not None and m.at >= first_in), None)
+            return first_in, first_reply
+        return await self.dialog_firsts(peer_id)
+
+    async def recent_messages(self, peer_id: int, limit: int = 50, access_hash: int | None = None):
+        if self._fake and self._fake.history_errors:
+            raise self._fake.history_errors.pop(0)
+        return list((self._fake.history.get(str(peer_id)) or [])[-limit:]) if self._fake else []
 
     async def wait_disconnected(self):
         await self._disconnected

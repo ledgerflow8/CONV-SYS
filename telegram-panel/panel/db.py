@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
-from panel.models import Base, Setting
+from panel.models import AiEvent, Base, Setting
 
 
 def make_engine(db_path: Path) -> AsyncEngine:
@@ -39,11 +39,19 @@ def _add_missing_columns(conn: Any) -> None:
                 conn.exec_driver_sql(ddl)
 
 
+def _add_missing_tables(conn: Any) -> None:
+    """Tables added after the panel held real data. create_all already makes a missing table; this
+    names each one so the migration is explicit, and checkfirst keeps it idempotent."""
+    for table in (AiEvent.__table__,):  # ai_events: 2026-11-05
+        table.create(conn, checkfirst=True)
+
+
 async def init_db(engine: AsyncEngine) -> None:
     # The DB holds encrypted sessions: keep it owner-only.
     path = engine.url.database
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_add_missing_tables)
         await conn.run_sync(_add_missing_columns)
     if path:
         Path(path).chmod(0o600)

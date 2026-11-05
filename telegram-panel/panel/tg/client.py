@@ -176,6 +176,8 @@ class TgClient(Protocol):
     async def download_avatar(self, path: Path) -> bool: ...
     async def last_activity(self) -> tuple[datetime | None, datetime | None]: ...
     async def dialog_firsts(self, peer_id: int) -> tuple[datetime | None, datetime | None]: ...
+    async def first_exchange(self, peer_id: int, access_hash: int | None = None) -> tuple[datetime | None, datetime | None]: ...
+    async def recent_messages(self, peer_id: int, limit: int = 50, access_hash: int | None = None) -> list[IncomingMessage]: ...
     async def wait_disconnected(self) -> TgError | None: ...
     def session_string(self) -> str: ...
     def on_private_message(self, cb: MessageCallback) -> None: ...
@@ -332,12 +334,22 @@ class TelethonClient:
 
     async def dialog_firsts(self, peer_id: int) -> tuple[datetime | None, datetime | None]:
         """The fan's first message in this chat, and the account's first message at or after it.
-        Read straight from Telegram so first_in_at is the real start, not just what we've seen."""
+        Read straight from Telegram so first_in_at is the real start, not just what we've seen.
+        Best-effort: (None, None) on any failure."""
+        try:
+            return await self.first_exchange(peer_id)
+        except TgError:
+            return None, None
+
+    async def first_exchange(self, peer_id: int, access_hash: int | None = None) -> tuple[datetime | None, datetime | None]:
+        """Like dialog_firsts, but reached via the stored access_hash and raising a classified TgError
+        (a FloodWait is `limited` with retry_after), for the qualified-convo audit. Service messages
+        (calls, pins, "joined Telegram") are not messages anyone wrote, so they're skipped."""
         first_in: datetime | None = None
         first_reply: datetime | None = None
         try:
-            async for m in self._c.iter_messages(peer_id, reverse=True, limit=200):
-                if m.date is None:
+            async for m in self._c.iter_messages(self._peer(peer_id, access_hash), reverse=True, limit=200):
+                if m.date is None or isinstance(m, types.MessageService):
                     continue
                 if not m.out and first_in is None:
                     first_in = m.date
@@ -345,9 +357,26 @@ class TelethonClient:
                     first_reply = m.date
                 if first_in is not None and first_reply is not None:
                     break
-        except Exception:
-            pass
+        except Exception as e:
+            raise classify(e) from e
         return first_in, first_reply
+
+    async def recent_messages(self, peer_id: int, limit: int = 50, access_hash: int | None = None) -> list[IncomingMessage]:
+        """The chat's newest `limit` messages, oldest first, read live (Chat logs page). Skips
+        service messages. Raises a classified TgError."""
+        out: list[IncomingMessage] = []
+        try:
+            peer_ref = self._peer(peer_id, access_hash)
+            entity = await self._c.get_entity(peer_ref)
+            peer = _peer_info(entity) if isinstance(entity, types.User) else PeerInfo(peer_id=str(peer_id), username=None, name=None, phone=None)
+            async for m in self._c.iter_messages(peer_ref, limit=limit):
+                if m.date is None or isinstance(m, types.MessageService):
+                    continue
+                out.append(IncomingMessage(peer=peer, tg_msg_id=m.id, out=bool(m.out), kind=_kind(m), text=m.message or None, at=m.date))
+        except Exception as e:
+            raise classify(e) from e
+        out.reverse()
+        return out
 
     async def wait_disconnected(self) -> TgError | None:
         try:
@@ -446,7 +475,7 @@ class TelethonClient:
             first_in: datetime | None = None
             first_reply: datetime | None = None
             async for m in self._c.iter_messages(entity, reverse=True, limit=200):
-                if m.date is None:
+                if m.date is None or isinstance(m, types.MessageService):
                     continue
                 if not m.out and first_in is None:
                     first_in = m.date
@@ -457,7 +486,7 @@ class TelethonClient:
             peer = _peer_info(entity)
             recent: list[IncomingMessage] = []
             async for m in self._c.iter_messages(entity, limit=100):
-                if m.date is None:
+                if m.date is None or isinstance(m, types.MessageService):
                     continue
                 if m.date < since:
                     break

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, HardDrive, RefreshCw } from "lucide-react";
+import { AlertTriangle, CheckCircle2, HardDrive, OctagonX, Power, RefreshCw } from "lucide-react";
 import { api } from "../api.js";
 import { ago } from "../time.js";
 import Toggle from "../components/Toggle.jsx";
+import Dialog from "../components/Dialog.jsx";
 import { StatsBlock } from "../components/AccountSheet.jsx";
 
 function Stat({ label, value, tone }) {
@@ -222,6 +223,12 @@ function RecoveryCard() {
             replies
           </p>
           <p className="text-muted-foreground">{t.unanswered} chats end with a fan message (no reply yet).</p>
+          {t.no_ai_reply > 0 && (
+            <p className="text-muted-foreground">
+              {t.no_ai_reply} chats have a reply with no record of the AI sending it; they stay Pending (approve them on the portal if they're
+              real).
+            </p>
+          )}
           {job.accounts
             .filter((a) => a.error)
             .map((a) => (
@@ -231,6 +238,76 @@ function RecoveryCard() {
             ))}
           {job.error && <p className="text-destructive">{job.error}</p>}
         </div>
+      )}
+    </section>
+  );
+}
+
+// The global AI kill switch: one big control that stops every Capitalbot call, whatever each
+// account's own AI toggle says. Stored in the panel DB, so it stays as set across restarts.
+function KillSwitchCard({ ai, onChanged }) {
+  const [confirm, setConfirm] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const on = !!ai.kill_switch;
+  const flip = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      await api("/api/system/kill-switch", { method: "POST", body: { on: !on } });
+      setConfirm(false);
+      window.dispatchEvent(new Event("panel:status")); // refresh the site-wide banner now
+      onChanged();
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className={`space-y-3 rounded-xl border-2 p-4 ${on ? "border-destructive bg-destructive/5" : "bg-card"}`}>
+      <div className="flex items-start gap-3">
+        <OctagonX className={`mt-0.5 size-6 shrink-0 ${on ? "text-destructive" : "text-muted-foreground"}`} />
+        <div className="flex-1">
+          <h2 className="font-semibold">AI kill switch {on ? "is ON" : "is off"}</h2>
+          <p className="text-sm text-muted-foreground">
+            {on
+              ? "No Capitalbot calls are made on any account. Fans get no AI replies until you switch it off."
+              : "AI replies run on every account with AI on. Switching this on stops every Capitalbot call at once."}
+          </p>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={() => setConfirm(true)}
+        className={`inline-flex h-14 w-full items-center justify-center gap-2 rounded-xl text-base font-semibold text-white ${
+          on ? "bg-emerald-600" : "bg-destructive"
+        }`}
+      >
+        <Power className="size-5" /> {on ? "Resume AI" : "Stop all AI"}
+      </button>
+      {err && <p className="text-sm text-destructive">{err}</p>}
+      {confirm && (
+        <Dialog title={on ? "Resume AI replies?" : "Stop all AI?"} onClose={() => setConfirm(false)}>
+          <p className="text-sm text-muted-foreground">
+            {on
+              ? "Capitalbot calls start again on every account whose own AI toggle is on. Fans who wrote meanwhile are picked up by the reply watchdog."
+              : "Every Capitalbot call stops now, on all accounts, until you resume. Fans who write get no reply and stay Pending in the portal."}
+          </p>
+          <div className="mt-4 flex justify-end gap-2">
+            <button type="button" onClick={() => setConfirm(false)} className="h-10 rounded-lg border px-4 text-sm">
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={flip}
+              className={`h-10 rounded-lg px-4 text-sm font-medium text-white disabled:opacity-50 ${on ? "bg-emerald-600" : "bg-destructive"}`}
+            >
+              {on ? "Resume AI" : "Stop all AI"}
+            </button>
+          </div>
+        </Dialog>
       )}
     </section>
   );
@@ -310,6 +387,8 @@ export default function Status() {
       </header>
 
       {error && <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
+
+      {ai && <KillSwitchCard ai={ai} onChanged={load} />}
 
       {status?.disk && <DiskCard disk={status.disk} onCompacted={load} />}
 
@@ -410,16 +489,10 @@ export default function Status() {
         </div>
         {ai && (
           <>
-            <label className="flex items-center justify-between gap-4">
-              <span className="text-sm">
-                <span className="font-medium">AI replies</span>
-                <span className="block text-xs text-muted-foreground">Master kill switch for every account.</span>
-              </span>
-              <Toggle on={!!ai.global_on} label="AI replies" onChange={(v) => saveSetting({ ai_global_on: v })} />
-            </label>
-            {ai.credit_over_until && (
+            {ai.kill_switch && <p className="text-sm text-destructive">Stopped by the AI kill switch (top of this page).</p>}
+            {ai.credits_out && (
               <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                AI credits depleted — replies paused until {ago(ai.credit_over_until)} from now.
+                Capitalbot credits empty, AI paused. Re-probing every couple of minutes; replies resume on their own when credits return.
               </p>
             )}
             {ai.last_error && <p className="text-sm text-amber-600">Last AI error: {ai.last_error}</p>}

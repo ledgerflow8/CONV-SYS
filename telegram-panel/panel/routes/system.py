@@ -9,10 +9,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 
 from panel import tier
+from panel.ailog import AI_GLOBAL_ON
 from panel.auth import require_login
 from panel.backup import BackupError
 from panel.db import get_setting, set_setting
 from panel.housekeeping import compact, disk_usage
+from panel.audit import AuditJob, audit_qualified
 from panel.recovery import RecoveryJob, recover
 from panel.reprocess import ReprocessJob, reprocess_tierfiltered
 from panel.models import Activity, OutboxItem, utcnow
@@ -27,7 +29,7 @@ SETTINGS = {
     "quiet_after_hours": (12, 1, 168),
     "ai_debounce_sec": (8, 0, 120),
     "typing_cps": (20, 1, 100),
-    "ai_global_on": (True, None, None),
+    "ai_global_on": (True, None, None),  # the global AI kill switch (False = switch ON); see /kill-switch
 }
 
 
@@ -73,6 +75,9 @@ async def status(request: Request) -> dict:
         "ai": {
             "configured": bool(capital and capital.configured),
             "global_on": ai_global_on,
+            "kill_switch": not ai_global_on,
+            # The credit re-probe last saw "credits out" (stays true between probes, unlike the pause window).
+            "credits_out": bool(ai and ai.credits_out),
             "credit_over_until": paused.isoformat() if paused else None,
             "last_error": ai.last_error if ai else None,
         },
@@ -163,6 +168,36 @@ async def reprocess_status(request: Request) -> dict:
     return {"reprocess": job.as_dict() if job else None}
 
 
+class AuditBody(BaseModel):
+    since: datetime
+    live: bool = False
+
+
+@router.post("/audit-qualified")
+async def start_audit(body: AuditBody, request: Request) -> dict:
+    """Read-only audit of chats reported to the portal as replied since `since` (audit.py). Runs in the
+    background; poll GET /audit-qualified. `live` also reads each unproven chat from Telegram."""
+    current: AuditJob | None = getattr(request.app.state, "audit", None)
+    if current is not None and current.running:
+        raise HTTPException(409, "An audit is already running.")
+    since = body.since if body.since.tzinfo else body.since.replace(tzinfo=timezone.utc)
+    since = since.astimezone(timezone.utc)
+    if since > utcnow():
+        raise HTTPException(400, "'since' is in the future.")
+    job = AuditJob(since=since, live=body.live, out_dir=request.app.state.settings.data_dir / "audit")
+    request.app.state.audit = job
+    task = asyncio.create_task(audit_qualified(request.app.state.service, job))
+    request.app.state.background.add(task)
+    task.add_done_callback(request.app.state.background.discard)
+    return {"audit": job.as_dict()}
+
+
+@router.get("/audit-qualified")
+async def audit_status(request: Request) -> dict:
+    job: AuditJob | None = getattr(request.app.state, "audit", None)
+    return {"audit": job.as_dict() if job else None}
+
+
 @router.get("/stats")
 async def system_stats(request: Request) -> dict:
     """Overall panel stats (today/week/all) plus Capitalbot's license-wide numbers where configured."""
@@ -188,6 +223,34 @@ class SettingsBody(BaseModel):
     ai_global_on: bool | None = None
 
 
+async def _set_kill_switch(request: Request, session, on: bool) -> None:
+    """Persist the kill switch and apply it to the Capitalbot client at once (no call leaves the panel)."""
+    await set_setting(session, AI_GLOBAL_ON, not on)
+    capital = getattr(request.app.state, "capital", None)
+    if capital is not None:
+        capital.blocked = on
+    session.add(
+        Activity(
+            level="warn" if on else "info",
+            kind="ai_kill_switch",
+            message="AI kill switch turned ON: all Capitalbot calls stopped" if on else "AI kill switch turned off: AI replies resume",
+        )
+    )
+
+
+class KillSwitchBody(BaseModel):
+    on: bool
+
+
+@router.post("/kill-switch")
+async def kill_switch(body: KillSwitchBody, request: Request) -> dict:
+    """The global AI kill switch: on stops every Capitalbot call, whatever each account's AI toggle says."""
+    async with _service(request).sessionmaker() as session:
+        await _set_kill_switch(request, session, body.on)
+        await session.commit()
+    return {"kill_switch": body.on}
+
+
 @router.get("/settings")
 async def get_settings(request: Request) -> dict:
     async with _service(request).sessionmaker() as session:
@@ -202,7 +265,9 @@ async def patch_settings(body: SettingsBody, request: Request) -> dict:
             if value is None:
                 continue
             _default, lo, hi = SETTINGS[key]
-            if isinstance(value, bool):
+            if key == AI_GLOBAL_ON:
+                await _set_kill_switch(request, session, not value)
+            elif isinstance(value, bool):
                 await set_setting(session, key, value)
             else:
                 if lo is not None and not (lo <= value <= hi):

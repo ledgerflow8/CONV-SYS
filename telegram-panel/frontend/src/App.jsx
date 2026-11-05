@@ -7,6 +7,7 @@ import Accounts from "./pages/Accounts.jsx";
 import Add from "./pages/Add.jsx";
 import Personas from "./pages/Personas.jsx";
 import Leads from "./pages/Leads.jsx";
+import Chats from "./pages/Chats.jsx";
 import Status from "./pages/Status.jsx";
 
 export const NAV = [
@@ -14,6 +15,7 @@ export const NAV = [
   { href: "/add", label: "Add accounts", emoji: "➕" },
   { href: "/personas", label: "Personas", emoji: "🎭" },
   { href: "/leads", label: "Leads", emoji: "⭐" },
+  { href: "/chats", label: "Chat logs", emoji: "💬" },
   { href: "/status", label: "Status", emoji: "📡" },
 ];
 
@@ -22,6 +24,7 @@ const PAGES = {
   "/add": () => <Add />,
   "/personas": () => <Personas />,
   "/leads": () => <Leads />,
+  "/chats": () => <Chats />,
   "/status": () => <Status />,
 };
 
@@ -69,10 +72,15 @@ function GlobalBanner() {
     const load = () => api("/api/system/status").then(setStatus).catch(() => {});
     load();
     const t = setInterval(() => document.visibilityState === "visible" && load(), 15000);
-    return () => clearInterval(t);
+    window.addEventListener("panel:status", load); // e.g. right after the kill switch is flipped
+    return () => {
+      clearInterval(t);
+      window.removeEventListener("panel:status", load);
+    };
   }, []);
   const msgs = [];
-  if (status?.ai?.credit_over_until) msgs.push("Capitalbot AI credits are depleted — AI replies are paused. They resume automatically when credits return.");
+  if (status?.ai?.kill_switch) msgs.push("AI kill switch is ON: all Capitalbot calls are stopped. Switch it off on Status.");
+  if (status?.ai?.credits_out || status?.ai?.credit_over_until) msgs.push("Capitalbot credits empty, AI paused");
   if (status?.portal && (status.portal.failed > 0 || status.portal.last_error)) msgs.push("Portal sync is failing — see Status.");
   if (!msgs.length) return null;
   return (

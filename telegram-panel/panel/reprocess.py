@@ -102,7 +102,7 @@ async def reprocess_tierfiltered(service, job: ReprocessJob) -> ReprocessJob:
                     await s.rollback()
             if reopen and service.ai is not None:
                 try:
-                    await service.ai.run_turn(account_id, peer_id)  # answer now, using the no-filter preset if set
+                    await service.ai.run_turn(account_id, peer_id, trigger="reprocess")  # answer now, using the no-filter preset if set
                 except Exception:
                     log.exception("reprocess turn failed account=%s peer=%s", account_id, peer_id)
             await asyncio.sleep(PEER_GAP_SEC)

@@ -100,6 +100,7 @@ class CapitalError(Exception):
       - timeout / server          → it may have generated a reply; never retried, wait for the next fan message.
       - client                    → a 400/401/403; `pause` is set so the account's AI is switched off.
       - bad_response              → a 200 whose body wasn't the documented shape.
+      - kill_switch               → the global AI kill switch is on; nothing was sent.
     """
 
     def __init__(self, kind: str, detail: str, *, status_code: int | None = None, pause: bool = False, retry_after: float | None = None):
@@ -124,13 +125,21 @@ class CapitalClient:
         self._base = base_url.rstrip("/")
         self._retry_delay = retry_delay
         self._catalog_cache: tuple[float, dict] | None = None
+        # The global AI kill switch (Status page), mirrored here from the DB setting at startup and on
+        # every change, so no call of any kind leaves the panel while it's on.
+        self.blocked = False
 
     @property
     def configured(self) -> bool:
         return bool(self.license_key)
 
+    def _check_blocked(self) -> None:
+        if self.blocked:
+            raise CapitalError("kill_switch", "The AI kill switch is on: all Capitalbot calls are stopped.")
+
     # ── catalog (models + presets) ───────────────────────────────────────────
     async def catalog(self, include_archived: bool = False, force: bool = False) -> dict:
+        self._check_blocked()
         now = time.monotonic()
         if not force and not include_archived and self._catalog_cache and now - self._catalog_cache[0] < CATALOG_TTL:
             return self._catalog_cache[1]
@@ -156,7 +165,7 @@ class CapitalClient:
     async def statistics(self, period: str = "7days") -> dict | None:
         """Combined numbers across the whole license for a period, or None if unavailable.
         period ∈ today · 3days · 7days · 30days · all (CapitalAI_Docs.md §/statistics)."""
-        if not self.configured:
+        if not self.configured or self.blocked:
             return None
         body = {"licensekey": self.license_key, "modelId": "all", "presetId": "all", "period": period, "account": "all"}
         try:
@@ -189,6 +198,7 @@ class CapitalClient:
         overrides: dict | None = None,
         file_path: str | None = None,
     ) -> CapitalResponse:
+        self._check_blocked()
         fields: dict[str, Any] = {
             "licensekey": self.license_key,
             "modelId": model_id,

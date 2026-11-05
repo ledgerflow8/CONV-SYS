@@ -100,7 +100,7 @@ Per-account overrides: `accounts.profile_overrides` (JSON, same allowed keys) is
 | peer_id | fan's Telegram user id (string) |
 | peer_username, peer_name, peer_phone | phone in E.164 with `+` when Telegram shows it |
 | first_in_at | the fan's first message (from Telegram history, not just what we saw) |
-| first_reply_at | the account's first message at or after `first_in_at` (AI or manual) |
+| first_reply_at | the first **AI reply delivered to Telegram** at or after `first_in_at`, from a clean (`ok`) Capitalbot response. Messages typed by hand, from another session or from history never set it (§10.17) |
 | reported_first, reported_reply | outbox enqueued |
 | ai_state | `active` · `converted` · `stopped` (underage / timewaste / ppvExhausted) · `filtered` (tier/gender/ignored/messagedAlready/internal) |
 | cooldown_until | from `chatCooldownUntil` |
@@ -108,7 +108,9 @@ Per-account overrides: `accounts.profile_overrides` (JSON, same allowed keys) is
 | media_uploads | JSON day counter, to stay under 5/min and 30/day |
 | last_in_at, last_out_at | |
 
-**messages** — unique (account_id, peer_id, tg_msg_id). Columns: `direction` (in/out), `sender` (`fan`/`ai`/`manual`), `kind` (`text`/`image`/`video`/`audio`/`gif`/`sticker`/`location`/`other`), `text`, `at`. Outgoing messages sent from the client's own phone are captured too (Telethon `NewMessage(outgoing=True)`). Rows older than 30 days are pruned.
+**messages** — unique (account_id, peer_id, tg_msg_id). Columns: `direction` (in/out), `sender` (`fan`/`ai`/`manual`), `kind` (`text`/`image`/`video`/`audio`/`gif`/`sticker`/`location`/`other`), `text`, `at`. Outgoing messages sent from the client's own phone are captured too (Telethon `NewMessage(outgoing=True)`), stored as `manual`, but they don't make a chat replied (§10.17). Rows older than 30 days are pruned.
+
+**ai_events** — the AI message log (§10.17). Columns: `account_id`, `peer_id`, `created_at`, `kind` (`fan_msg` · `ai_request` · `ai_reply_sent` · `ai_skipped`), `capital_status` (`ok` · `credit_over` · `tier_filtered` · `error` · `ai_off` · `kill_switch`), `text` (≤ 1000 chars), `error`. No foreign key (it outlives a deleted account). Pruned after 90 days.
 
 **outbox**
 | column | notes |
@@ -181,7 +183,7 @@ On success the account is saved like an import. Phone logins use the panel's own
    - **`conversationId`:** read from the top level, falling back to `statistics.conversationId`. It may be missing on the first exchange.
 
 ### 4.4 Portal events
-Derivation matches the portal's `toConvoEvent`. **firstMsgAt** is the fan's first message; **repliedAt** is the account's first message at or after it, whether the AI or the client wrote it.
+Derivation matches the portal's `toConvoEvent`. **firstMsgAt** is the fan's first message; **repliedAt** is the first AI reply delivered to Telegram at or after it, from a clean Capitalbot response (§10.17). Until 2026-11-05 any outgoing message counted.
 
 | when | event body |
 |---|---|
@@ -369,6 +371,12 @@ All settled on 2026-10-14. Nothing is waiting on the client or Capitalbot. ✅ m
 15. **Rate limits:** at most 10 Capitalbot calls in flight across the panel, and the per-chat debounce keeps each fan far under 60/min. A `429` is shown on Status.
 16. **`messages` / `media` fields:** ignored; only `content` is read.
 17. **Docs version:** `CapitalAI_Docs.md` (in this folder) is the version we build against. If Capitalbot changes behaviour, the doc gets updated first.
+17. **Qualify only on a delivered AI reply; AI log, Chat logs, audit, kill switch (settled 2026-11-05):** the client's Capitalbot dashboard showed 2,001 conversations charged against 2,529 qualified in the portal. Until now `repliedAt` was the account's first outgoing message after the fan's, so it also fired on messages typed on a phone, sent by another session or a Telegram auto-message, on old replies already in Telegram history when a fan wrote again (`dialog_firsts`), and in `recover` (history scan). None of those needed Capitalbot, so they qualified even while credits were 0.
+    - **Qualify rule:** only `Service.record_ai_message` sets `first_reply_at`, after Telegram accepted an AI piece from a response with neither `aiCreditOver` nor `tierFiltered`. Never on credit_over / tier_filtered / error / AI off / kill switch. The panel has no manual-send UI; if one is added it must go through the same door. `recover` sets a reply only with AI evidence and counts the rest as `no_ai_reply` (left Pending for the Director). Service messages (calls, pins) are skipped when reading history.
+    - **AI log** (`ai_events`, `panel/ailog.py`): `fan_msg` per fan message; `ai_request` per Capitalbot call with its status (text names the trigger: fan · watchdog · reprobe · reprocess, the flags and the fan's message); `ai_reply_sent` per piece delivered; `ai_skipped` when nothing was sent and why (AI off, kill switch, credit pause, reply dropped or failed to send, the panel's own tier pre-filter). Repeats (a credit pause re-probing) are collapsed to one row per fan message. Evidence of an AI reply = an `ai_reply_sent` `ok` row, or for replies from before the log existed (`ai_log_started_at` setting) a stored `ai` message row.
+    - **Chat logs page** (`/chats`, `routes/chats.py`): chats filtered by account, first-message date, AI replied yes/no and AI status; a chat shows its last 50 messages read live from Telegram (fan vs model, AI vs "not sent by the AI"), falling back to stored messages when the account is offline or Telegram refuses, plus its AI log timeline.
+    - **Audit** (`panel/audit.py`, `python -m panel audit-qualified --since <ISO> [--live]`): read-only. For chats reported as replied since a time, totals by account and day of AI vs no-AI replies; `--live` reads each unproven chat from Telegram (stored access_hash, 0.5 s apart, waits out FloodWaits ≤ 120 s, skips an account on a longer one) for `has_outgoing`. CSV of the no-AI chats in `DATA_DIR/audit/`.
+    - **Kill switch** (Status, top): one control that stops every Capitalbot call, including catalog and statistics (`CapitalClient.blocked`, checked in `capital.py`), regardless of per-account toggles. Stored as the existing `ai_global_on` setting, so it survives restarts. Red banners on every page: the kill switch, and "Capitalbot credits empty, AI paused" while the re-probe says credits are out (`credits_out`, which doesn't lapse between probes). The reply watchdog obeys both and logs its turns.
 
 ## 12. Disk housekeeping and recovery (2026-10-25)
 
@@ -378,5 +386,5 @@ The 1 GB data disk filled (~16:00 UTC, 2026-10-25): every SQLite write failed, s
 - **Media:** fan media over 50 MB (Capitalbot's limit) is never downloaded, and downloads happen inside the AI semaphore (at most 10 on disk at once).
 - **VACUUM** is a Status button ("Compact database"), not automatic: it blocks writes while it runs and needs free space the size of the DB. Freed pages are reused anyway.
 - **Status → Data disk:** usage bar, breakdown, warning at ≥ 80 %, critical at ≥ 90 % (also logged to Activity hourly).
-- **Recovery** (`panel/recovery.py`; Status → "Recover missed convos", or `python -m panel recover --since … [--apply]`): re-reads connected accounts' chats since a time over their live connections (never a second process), restores message rows, fills missing first-message/first-reply times and queues the missing convo events through the outbox. Idempotent; dry run by default. Sends nothing to fans.
+- **Recovery** (`panel/recovery.py`; Status → "Recover missed convos", or `python -m panel recover --since … [--apply]`): re-reads connected accounts' chats since a time over their live connections (never a second process), restores message rows, fills missing first-message times (and a first-reply time only with evidence the AI sent it, §10.17) and queues the missing convo events through the outbox. Idempotent; dry run by default. Sends nothing to fans.
 

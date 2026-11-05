@@ -10,6 +10,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     LargeBinary,
     String,
@@ -140,6 +141,29 @@ class Message(Base):
     kind: Mapped[str] = mapped_column(String(10))  # text · image · video · audio · gif · sticker · location · other
     text: Mapped[str | None] = mapped_column(Text)
     at: Mapped[datetime] = mapped_column(UTCDateTime, index=True)
+
+
+class AiEvent(Base):
+    """The AI message log (client 2026-11-05): what the fan said, every Capitalbot call and how it
+    came back, and every AI reply actually delivered to Telegram. It's the evidence behind the qualify
+    rule (only a delivered AI reply reports `repliedAt`), the Chat logs page and `audit-qualified`.
+    No foreign key: the log outlives a deleted account."""
+
+    __tablename__ = "ai_events"
+    __table_args__ = (Index("ix_ai_events_chat", "account_id", "peer_id", "created_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(Integer)
+    peer_id: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, index=True)
+    kind: Mapped[str] = mapped_column(String(16))  # fan_msg · ai_request · ai_reply_sent · ai_skipped
+    # ok · credit_over · tier_filtered · error · ai_off · kill_switch (None on fan_msg)
+    capital_status: Mapped[str | None] = mapped_column(String(16))
+    text: Mapped[str | None] = mapped_column(Text)  # truncated to AI_EVENT_TEXT_MAX
+    error: Mapped[str | None] = mapped_column(Text)
+
+
+AI_EVENT_TEXT_MAX = 1000
 
 
 class Lead(Base):

@@ -14,7 +14,7 @@ import panel.recovery
 from panel import housekeeping
 from panel.db import init_db, make_engine, make_sessionmaker
 from panel.main import create_app
-from panel.models import Account, Activity, Chat, Message, OutboxItem, utcnow
+from panel.models import Account, Activity, AiEvent, Chat, Message, OutboxItem, utcnow
 from panel.tg.client import AccountInfo, IncomingMessage, PeerInfo, TgError
 from tests.conftest import H, PASSWORD, set_password, speed_up_imports
 from tests.fake_tg import FakeAccount, FakeDirectory
@@ -82,11 +82,15 @@ async def test_prune_rows_drops_old_delivered_outbox_and_activity_never_pending(
             s.add(OutboxItem(kind="convo", payload={}, status=status, created_at=now - timedelta(days=age)))
         s.add(Activity(level="info", kind="x", message="old", at=now - timedelta(days=31)))
         s.add(Activity(level="info", kind="x", message="new", at=now))
+        s.add(AiEvent(account_id=1, peer_id="5", kind="fan_msg", text="old", created_at=now - timedelta(days=91)))
+        s.add(AiEvent(account_id=1, peer_id="5", kind="fan_msg", text="kept", created_at=now - timedelta(days=60)))
         await s.commit()
-        outbox, activity, _imports = await housekeeping.prune_rows(s)
+        outbox, activity, _imports, ai_events = await housekeeping.prune_rows(s)
         left = sorted((r.status, (now - r.created_at).days) for r in (await s.scalars(select(OutboxItem))).all())
         acts = [a.message for a in (await s.scalars(select(Activity))).all()]
-    assert (outbox, activity) == (2, 1)
+        log_left = [e.text for e in (await s.scalars(select(AiEvent))).all()]
+    assert (outbox, activity, ai_events) == (2, 1, 1)
+    assert log_left == ["kept"]
     assert left == [("failed", 5), ("pending", 60), ("sent", 1)]
     assert acts == ["new"]
 
@@ -295,9 +299,12 @@ def test_recovers_a_convo_lost_while_the_disk_was_full(client, directory, monkey
     assert _convo(_outbox(client)) == []
     monkeypatch.setattr(client.app.state.service, "_report_chat", real)  # disk grown
 
+    # The AI's reply was logged before the save failed: that's the evidence recovery needs.
+    _log_ai_reply(client, acc, "555", reply)
+
     # Dry run: reports, changes nothing.
     job = _recover(client, ago(180), dry_run=True)
-    assert job["totals"] == {"chats_scanned": 1, "messages_restored": 3, "first_events": 1, "reply_events": 1, "unanswered": 1}
+    assert job["totals"] == {"chats_scanned": 1, "messages_restored": 3, "first_events": 1, "reply_events": 1, "no_ai_reply": 0, "unanswered": 1}
     assert _convo(_outbox(client)) == []
 
     # Apply: the first and reply events are queued with Telegram's real times.
@@ -322,6 +329,32 @@ def test_recovers_a_convo_lost_while_the_disk_was_full(client, directory, monkey
     assert len(_convo(_outbox(client))) == 2
 
 
+def _log_ai_reply(c, account_id, peer_id, when):
+    async def _a():
+        async with c.app.state.sessionmaker() as s:
+            s.add(AiEvent(account_id=account_id, peer_id=peer_id, kind="ai_reply_sent", capital_status="ok", text="hey you", created_at=when))
+            await s.commit()
+
+    c.portal.call(_a)
+
+
+def test_a_reply_with_no_record_of_the_ai_sending_it_stays_pending(client, directory, monkeypatch):
+    """Qualify rule (client 2026-11-05): an outgoing message in Telegram's history may be typed by hand,
+    another session or a pre-panel reply. Without AI evidence recovery queues no reply; it counts it."""
+    first, reply = ago(120), ago(115)
+    msgs = [IncomingMessage(fan(), 1, False, "text", "hi", first), IncomingMessage(fan(), 2, True, "text", "typed on a phone", reply)]
+    acc = _import(client, directory, 65, AccountInfo(8005, "nolog", "+1", "N"), history={"555": msgs})
+    real = client.app.state.service._report_chat
+    _disk_full(client, monkeypatch)
+    for m in msgs:
+        _deliver(client, acc, m)
+    monkeypatch.setattr(client.app.state.service, "_report_chat", real)
+
+    job = _recover(client, ago(180), dry_run=False)
+    assert (job["totals"]["first_events"], job["totals"]["reply_events"], job["totals"]["no_ai_reply"]) == (1, 0, 1)
+    assert ["repliedAt" in p for p in _convo(_outbox(client))] == [False]
+
+
 def test_only_the_missing_reply_is_queued(client, directory, monkeypatch):
     first, reply = ago(300), ago(100)
     msgs = [IncomingMessage(fan(), 1, False, "text", "hi", first), IncomingMessage(fan(), 2, True, "text", "hey", reply)]
@@ -331,6 +364,7 @@ def test_only_the_missing_reply_is_queued(client, directory, monkeypatch):
     _disk_full(client, monkeypatch)
     _deliver(client, acc, msgs[1])  # the reply arrives during it
     monkeypatch.setattr(client.app.state.service, "_report_chat", real)
+    _log_ai_reply(client, acc, "555", reply)
 
     job = _recover(client, ago(200), dry_run=False)
     assert (job["totals"]["first_events"], job["totals"]["reply_events"]) == (0, 1)

@@ -19,12 +19,15 @@ from panel.auth import LoginLimiter, Signer
 from panel.capital import CapitalClient
 from panel.config import Settings, get_settings
 from panel.crypto import Crypto
-from panel.db import init_db, make_engine, make_sessionmaker
+from panel.ailog import AI_GLOBAL_ON, LOG_STARTED_AT
+from panel.db import get_setting, init_db, make_engine, make_sessionmaker, set_setting
+from panel.models import utcnow
 from panel.housekeeping import Housekeeper
 from panel.lock import InstanceLock
 from panel.portal import OutboxWorker, PortalConfig
 from panel.routes import accounts as account_routes
 from panel.routes import auth as auth_routes
+from panel.routes import chats as chat_routes
 from panel.routes import imports as import_routes
 from panel.routes import leads as lead_routes
 from panel.routes import profiles as profile_routes
@@ -75,6 +78,12 @@ def create_app(settings: Settings | None = None, dist: Path = DIST, client_facto
             # Capitalbot client + the AI reply worker (step 3). Idle until CAPITAL_LICENSE_KEY is set.
             capital = CapitalClient(settings.capital_license_key, http)
             app.state.capital = capital
+            # The global AI kill switch lives in the DB, so it survives restarts: mirror it into the client.
+            async with sessionmaker() as s:
+                capital.blocked = not await get_setting(s, AI_GLOBAL_ON, True)
+                if await get_setting(s, LOG_STARTED_AT) is None:
+                    await set_setting(s, LOG_STARTED_AT, utcnow().isoformat())
+                    await s.commit()
             engine_ai = AiEngine(sessionmaker, manager, capital, app.state.crypto, settings.data_dir, http, phone_filter_enabled=settings.phone_filter_enabled)
             engine_ai.service_record = app.state.service.record_ai_message
             engine_ai.report_ai_outcome = app.state.service.report_ai_outcome
@@ -107,6 +116,7 @@ def create_app(settings: Settings | None = None, dist: Path = DIST, client_facto
             app.state.housekeeper = housekeeper
             app.state.recovery = None  # the last/current convo recovery job (routes/system.py)
             app.state.reprocess = None  # the last/current tierFiltered re-process job (routes/system.py)
+            app.state.audit = None  # the last/current qualified-convo audit (audit.py)
             app.state.background.add(asyncio.create_task(housekeeper.run()))
             # Reply watchdog: re-attempts chats whose newest message is an unanswered fan message.
             app.state.background.add(asyncio.create_task(engine_ai.watchdog_loop()))
@@ -152,6 +162,7 @@ def create_app(settings: Settings | None = None, dist: Path = DIST, client_facto
     app.include_router(import_routes.router)
     app.include_router(profile_routes.router)
     app.include_router(lead_routes.router)
+    app.include_router(chat_routes.router)
     app.include_router(system_routes.router)
 
     @app.get("/healthz")

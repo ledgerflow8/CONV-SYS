@@ -79,7 +79,7 @@ def _status(outbox):
     return [p for kind, p, _dk, _st in outbox if kind == "account_status" and "status" in p]
 
 
-def test_incoming_then_reply_makes_first_and_reply_events(client, directory):
+def test_incoming_makes_a_first_event_and_an_outgoing_message_alone_never_a_reply(client, directory):
     acc = _import(client, directory, 50, AccountInfo(7001, "alice", "+1", "A"))
 
     # Fan writes → a "first" convo event, with the fan's phone.
@@ -88,12 +88,19 @@ def test_incoming_then_reply_makes_first_and_reply_events(client, directory):
     assert len(convo) == 1
     assert convo[0] == {"tgAccount": "alice", "tgUserId": "7001", "peerId": "555", "peerPhone": "+15557770000", "firstMsgAt": "2026-10-07T09:00:00Z"}
 
-    # Account replies → a "reply" event carrying repliedAt. firstMsgAt is unchanged.
+    # The account sends something not from the AI (typed on a phone, another session, a Telegram
+    # auto-message): no repliedAt (qualify rule, client 2026-11-05). The AI path is in test_ai.py.
     _deliver(client, acc, IncomingMessage(fan(), tg_msg_id=2, out=True, kind="text", text="hey", at=at(9, 5)))
+    assert len(_convo(_outbox(client))) == 1
+
+
+def test_a_replied_old_chat_does_not_qualify_from_history(client, directory):
+    # Telegram history already holds an old exchange (e.g. answered before the panel had the account).
+    acc = _import(client, directory, 52, AccountInfo(7003, "cara", "+1", "C"), dialog_firsts={"555": (at(7), at(7, 30))})
+    _deliver(client, acc, IncomingMessage(fan(), tg_msg_id=9, out=False, kind="text", text="hi again", at=at(14)))
     convo = _convo(_outbox(client))
-    assert len(convo) == 2
-    assert convo[1]["repliedAt"] == "2026-10-07T09:05:00Z"
-    assert convo[1]["firstMsgAt"] == "2026-10-07T09:00:00Z"
+    assert len(convo) == 1 and "repliedAt" not in convo[0]
+    assert convo[0]["firstMsgAt"] == "2026-10-07T07:00:00Z"
 
 
 def test_firstmsgat_comes_from_telegram_history(client, directory):

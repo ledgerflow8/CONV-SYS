@@ -116,6 +116,15 @@ Or **Manual Deploy → Deploy latest commit** in the dashboard. Env-var or setti
   Shell `python -m panel recover --since 2026-10-25T15:30:00Z` (dry run), then add `--apply`. It asks the running
   panel to do the work over its own Telegram connections.
 
+## Audit qualified convos
+Read-only; changes nothing in the panel or the portal. In the **Shell** tab:
+- `python -m panel audit-qualified --since 2026-10-26T00:00:00Z` totals, by account and by day, the chats the panel
+  reported to the portal as replied since that time, split into AI reply / no AI reply.
+- Add `--live` to also read each no-AI-reply chat from Telegram (`has_outgoing`: was anything sent at all?). It
+  goes one chat every 0.5 s and waits out short FloodWaits, so a few hundred chats take a few minutes.
+- The CSV of the no-AI-reply chats is written to `/var/data/audit/` (the path is printed). `cat` it from the Shell
+  to copy it out.
+
 ## Backups
 **Settings → Disks → tgpanel-data** offers scheduled disk snapshots — **enable them**. A snapshot holds the
 encrypted sessions and SQLite; store `PANEL_ENC_KEY` **outside** the snapshot or a leaked backup is useless to
