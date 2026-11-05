@@ -26,11 +26,25 @@ def make_engine(db_path: Path) -> AsyncEngine:
     return engine
 
 
+def _add_missing_columns(conn: Any) -> None:
+    """Additive, idempotent column migrations for tables that already hold real data — create_all
+    never alters an existing table (CLAUDE.md). SQLite ADD COLUMN is cheap and safe for a nullable."""
+    migrations = {
+        "chats": {"access_hash": "ALTER TABLE chats ADD COLUMN access_hash BIGINT"},
+    }
+    for table, cols in migrations.items():
+        existing = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()}
+        for name, ddl in cols.items():
+            if name not in existing:
+                conn.exec_driver_sql(ddl)
+
+
 async def init_db(engine: AsyncEngine) -> None:
     # The DB holds encrypted sessions: keep it owner-only.
     path = engine.url.database
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_add_missing_columns)
     if path:
         Path(path).chmod(0o600)
 

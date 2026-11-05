@@ -11,7 +11,7 @@ import { formatDateTime, formatPeriod, tzLabel } from "@/lib/time";
 import { parseLocalDateTime, weekBounds } from "@/lib/weeks";
 import { cn } from "@/lib/utils";
 import { getSyncState } from "@/lib/capitalai-sync";
-import { ImportConvosDialog, PendingApproveList, ReviewActions, SyncNowButton } from "./convo-controls";
+import { ImportConvosDialog, PendingApproveList, RejectOlderThan, ReviewActions, SyncNowButton } from "./convo-controls";
 
 const STATUSES: ConvoStatus[] = ["QUALIFIED", "PENDING", "REVIEW", "REJECTED"];
 const LIST_LIMIT = 100;
@@ -24,6 +24,8 @@ const REASON_LABEL: Record<string, string> = {
   non_tier1: "Not Tier 1",
   blocked_source: "Blocked source",
   review_rejected: "Rejected in review",
+  manual_reject: "Rejected by staff",
+  audit_no_reply: "Rejected: no real reply",
 };
 
 const convoSelect = {
@@ -188,10 +190,13 @@ export default async function ConvosPage({ searchParams }: { searchParams: Promi
         {(from || to) && ` · first message ${from ? `from ${formatDateTime(from, tz)}` : ""}${to ? ` to ${formatDateTime(to, tz)}` : ""}`}
       </p>
       {status === "PENDING" ? (
-        <PendingApproveList
-          currentWeek={`this week (${formatPeriod(weekBounds(new Date(), tz), tz)})`}
-          rows={list.map((c) => ({ id: c.id, content: <ConvoLine c={c} tz={tz} /> }))}
-        />
+        <div className="space-y-3">
+          <RejectOlderThan />
+          <PendingApproveList
+            currentWeek={`this week (${formatPeriod(weekBounds(new Date(), tz), tz)})`}
+            rows={list.map((c) => ({ id: c.id, content: <ConvoLine c={c} tz={tz} /> }))}
+          />
+        </div>
       ) : (
         <Card className="py-0">
           <ul className="divide-y">

@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 
 from panel.auth import require_login
 from panel.capital import ALLOWED_OVERRIDE_KEYS, CapitalError
+from panel.db import get_setting, set_setting
 from panel.models import Account, Profile, utcnow
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_login)])
@@ -15,17 +16,24 @@ router = APIRouter(prefix="/api", dependencies=[Depends(require_login)])
 log = logging.getLogger("panel.routes.profiles")
 
 
+def _nofilter_key(profile_id: int) -> str:
+    # The no-filter Capitalbot preset (same character, tier filter OFF) used for a confirmed Tier-1
+    # fan. Kept as a setting, not a Profile column, to avoid a schema migration (CLAUDE.md).
+    return f"nofilter_preset:{profile_id}"
+
+
 def _clean_overrides(overrides: dict | None) -> dict:
     """Keep only the keys Capitalbot accepts (PLAN.md §3); drop everything else silently."""
     return {k: v for k, v in (overrides or {}).items() if k in ALLOWED_OVERRIDE_KEYS and v is not None}
 
 
-def _profile_dict(p: Profile) -> dict:
+def _profile_dict(p: Profile, nofilter: int | None = None) -> dict:
     return {
         "id": p.id,
         "name": p.name,
         "capital_model_id": p.capital_model_id,
         "capital_preset_id": p.capital_preset_id,
+        "capital_preset_id_nofilter": nofilter,
         "overrides": p.overrides or {},
     }
 
@@ -51,13 +59,15 @@ async def list_profiles(request: Request) -> dict:
         counts = dict(
             (await session.execute(select(Account.profile_id, func.count()).group_by(Account.profile_id))).all()
         )
-    return {"profiles": [{**_profile_dict(p), "accounts": counts.get(p.id, 0)} for p in rows]}
+        nofilters = {p.id: await get_setting(session, _nofilter_key(p.id)) for p in rows}
+    return {"profiles": [{**_profile_dict(p, nofilters.get(p.id)), "accounts": counts.get(p.id, 0)} for p in rows]}
 
 
 class ProfileBody(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     capital_model_id: int
     capital_preset_id: int
+    capital_preset_id_nofilter: int | None = None
     overrides: dict = Field(default_factory=dict)
 
     @field_validator("name")
@@ -79,8 +89,10 @@ async def create_profile(body: ProfileBody, request: Request) -> dict:
             overrides=_clean_overrides(body.overrides),
         )
         session.add(p)
+        await session.flush()
+        await set_setting(session, _nofilter_key(p.id), body.capital_preset_id_nofilter)
         await session.commit()
-        return _profile_dict(p)
+        return _profile_dict(p, body.capital_preset_id_nofilter)
 
 
 @router.patch("/profiles/{profile_id}")
@@ -94,8 +106,9 @@ async def update_profile(profile_id: int, body: ProfileBody, request: Request) -
         p.capital_preset_id = body.capital_preset_id
         p.overrides = _clean_overrides(body.overrides)
         p.updated_at = utcnow()
+        await set_setting(session, _nofilter_key(p.id), body.capital_preset_id_nofilter)
         await session.commit()
-        return _profile_dict(p)
+        return _profile_dict(p, body.capital_preset_id_nofilter)
 
 
 @router.delete("/profiles/{profile_id}")

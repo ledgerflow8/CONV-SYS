@@ -7,6 +7,7 @@ import { audit } from "@/lib/audit";
 import { fail, isUniqueViolation, type Result } from "@/lib/action-result";
 import type { CurrentUser } from "@/lib/auth/session";
 import { isBlockedDomain, normalizeDomain } from "@/lib/clicks";
+import { scopeFor } from "@/lib/scope";
 import { AI_TIER1, countryFromPhone, decide, isFinal } from "@/lib/qualify";
 import { getAllSettings } from "@/lib/settings";
 import type { Settings } from "@/lib/settings-defaults";
@@ -412,6 +413,82 @@ export async function approvePendingConvos(actor: CurrentUser, convoIds: string[
     }
   }
   return { ok: true, data: out };
+}
+
+// ── Bulk reject PENDING (Director / Lead Manager; client 2026-11-05) ──────────
+
+export const REJECT_REASON = "manual_reject";
+export type BulkReject = { rejected: number; skipped: { convoId: string; reason: string }[] };
+
+function canReject(actor: CurrentUser): boolean {
+  return actor.role === "DIRECTOR" || actor.role === "LEAD_MANAGER";
+}
+
+/**
+ * Reject selected PENDING convos — the mirror of approvePendingConvos. Director or Lead Manager only,
+ * each only within their own scope. One transaction per convo, so one bad row never blocks the rest;
+ * anything no longer pending, out of scope, or in a locked week is skipped (a locked week never
+ * changes — CLAUDE.md; a PENDING convo has no week, so this is a belt-and-braces guard).
+ */
+export async function rejectPendingConvos(actor: CurrentUser, convoIds: string[]): Promise<Result<BulkReject>> {
+  if (!canReject(actor)) return fail("Only a Director or Lead Manager can reject convos.");
+  const ids = [...new Set(convoIds)];
+  if (ids.length === 0) return fail("Select at least one convo.");
+  if (ids.length > MAX_PENDING_APPROVAL) return fail(`Reject at most ${MAX_PENDING_APPROVAL} at a time.`);
+  const scope = scopeFor(actor).convo;
+  const out: BulkReject = { rejected: 0, skipped: [] };
+
+  for (const id of ids) {
+    const result = await db.$transaction(async (tx) => {
+      const convo = await lockConvo(tx, { id });
+      if (!convo || convo.status !== "PENDING") return { skip: "Not pending any more" };
+      const inScope = await tx.convo.findFirst({ where: { AND: [scope, { id }] }, select: { id: true } });
+      if (!inScope) return { skip: "Not in your scope" };
+      if (convo.weekId) {
+        const week = await tx.week.findUnique({ where: { id: convo.weekId }, select: { status: true } });
+        if (week?.status === "LOCKED") return { skip: "In a locked week" };
+      }
+      await tx.convo.update({ where: { id: convo.id }, data: { status: "REJECTED", rejectReason: REJECT_REASON, reviewReason: null } });
+      await auditStatus(tx, convo.id, actor.id, "PENDING", "REJECTED", REJECT_REASON, "review");
+      return { ok: true };
+    });
+    if ("skip" in result) out.skipped.push({ convoId: id, reason: result.skip as string });
+    else out.rejected++;
+  }
+  return { ok: true, data: out };
+}
+
+function olderThanCutoff(hours: number): Date {
+  return new Date(Date.now() - hours * 3_600_000);
+}
+
+const MAX_REJECT_HOURS = 24 * 365;
+
+/** How many PENDING convos (in scope) are older than `hours` — the preview before the bulk reject. */
+export async function countPendingOlderThan(actor: CurrentUser, hours: number): Promise<Result<{ count: number }>> {
+  if (!canReject(actor)) return fail("Only a Director or Lead Manager can reject convos.");
+  if (!Number.isInteger(hours) || hours < 1 || hours > MAX_REJECT_HOURS) return fail("Enter a whole number of hours (1 or more).");
+  const count = await db.convo.count({
+    where: { AND: [scopeFor(actor).convo, { status: "PENDING" }, { firstMsgAt: { lt: olderThanCutoff(hours) } }] },
+  });
+  return { ok: true, data: { count } };
+}
+
+/**
+ * Reject every PENDING convo (in scope) whose first message is older than `hours`. One transaction;
+ * the status=PENDING guard means a convo that qualified since the preview is left alone, and a PENDING
+ * convo is never in a locked week.
+ */
+export async function rejectPendingOlderThan(actor: CurrentUser, hours: number): Promise<Result<{ rejected: number }>> {
+  if (!canReject(actor)) return fail("Only a Director or Lead Manager can reject convos.");
+  if (!Number.isInteger(hours) || hours < 1 || hours > MAX_REJECT_HOURS) return fail("Enter a whole number of hours (1 or more).");
+  const where: Prisma.ConvoWhereInput = { AND: [scopeFor(actor).convo, { status: "PENDING" }, { firstMsgAt: { lt: olderThanCutoff(hours) } }] };
+  const rejected = await db.$transaction(async (tx) => {
+    const r = await tx.convo.updateMany({ where, data: { status: "REJECTED", rejectReason: REJECT_REASON, reviewReason: null } });
+    if (r.count) await audit(tx, { actorId: actor.id, action: "convo.bulk_reject", target: actor.id, meta: { olderThanHours: hours, count: r.count } });
+    return r.count;
+  });
+  return { ok: true, data: { rejected } };
 }
 
 /** Re-runs ingest for a REVIEW convo with its stored data (e.g. after the account was added to the pool). */

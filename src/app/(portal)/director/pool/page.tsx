@@ -11,7 +11,7 @@ import { AccountActions, AddAccountDialog, ImportAccountsDialog, SetModel } from
 import { getSetting } from "@/lib/settings";
 import { formatDateTime } from "@/lib/time";
 
-const STATUSES: TgStatus[] = ["AVAILABLE", "ASSIGNED", "BANNED", "RETIRED"];
+const STATUSES: TgStatus[] = ["AVAILABLE", "ASSIGNED", "BANNED", "RETIRED", "FROZEN"];
 const LIST_LIMIT = 200;
 
 export default async function PoolPage({

@@ -73,6 +73,22 @@ def test_persona_crud_and_delete_guard(client, directory):
     assert client.delete(f"/api/profiles/{pid}", headers=H).status_code == 200
 
 
+def test_persona_no_filter_preset_round_trips(client, directory):
+    created = client.post(
+        "/api/profiles",
+        json={"name": "Nova", "capital_model_id": 43, "capital_preset_id": 88, "capital_preset_id_nofilter": 555},
+        headers=H,
+    ).json()
+    pid = created["id"]
+    assert created["capital_preset_id_nofilter"] == 555
+    got = next(p for p in client.get("/api/profiles").json()["profiles"] if p["id"] == pid)
+    assert got["capital_preset_id_nofilter"] == 555
+    # Clearing it (back to always using the normal preset).
+    client.patch(f"/api/profiles/{pid}", json={"name": "Nova", "capital_model_id": 43, "capital_preset_id": 88, "capital_preset_id_nofilter": None}, headers=H)
+    got = next(p for p in client.get("/api/profiles").json()["profiles"] if p["id"] == pid)
+    assert got["capital_preset_id_nofilter"] is None
+
+
 def test_ai_toggle_needs_a_persona(client, directory):
     acc = _import(client, directory, 91, AccountInfo(9100, "bob", "+1", "B"))
     assert client.post(f"/api/accounts/{acc}/ai", json={"on": True}, headers=H).status_code == 409

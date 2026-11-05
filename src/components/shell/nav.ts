@@ -9,6 +9,7 @@ export const NAV: Record<RoleName, NavItem[]> = {
     { href: "/director/models", label: "Models", emoji: "⭐" },
     { href: "/director/pool", label: "Telegram Pool", emoji: "📱" },
     { href: "/director/convos", label: "Convos", emoji: "💬" },
+    { href: "/director/reject-by-peer", label: "Reject by list", emoji: "🧹" },
     { href: "/director/payouts", label: "Payouts", emoji: "💸" },
     { href: "/director/resources", label: "Resources", emoji: "📚" },
     { href: "/director/settings", label: "Settings", emoji: "⚙️" },

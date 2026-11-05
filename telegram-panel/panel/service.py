@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from panel import portal, tier
 from panel.accounts import AccountManager
 from panel.crypto import Crypto, InvalidToken
+from panel.db import get_setting
 from panel.models import Account, Activity, Chat, Lead, Message, Profile, utcnow
 from panel.tg.client import AccountInfo, ConnectParams, IncomingMessage, TgError
 
@@ -40,6 +41,23 @@ def _ai_tier(chat: Chat) -> str | None:
     None     = no verdict, so the portal falls back to phone / click / review.
     The portal trusts this only when the fan's phone is hidden."""
     if chat.ai_state_reason == "tierFiltered":
+        return "NON_T1"
+    if chat.ai_state == "filtered":
+        return None  # genderFiltered / ignored / messagedAlready / internalAccount — not a tier call
+    if chat.capital_conversation_id is not None:
+        return "T1"
+    return None
+
+
+def _tier_verdict(chat: Chat, reliable_country: str | None, tier1: list[str]) -> str | None:
+    """The tier verdict to report, trusting OUR own country over Capitalbot's name-based tier guess
+    (client 2026-11-03). NON_T1 (reject as non_tier1) is sent only when our country is NOT a confirmed
+    Tier-1: either a reliable non-Tier-1 country, or no reliable country at all (then Capitalbot's
+    tierFiltered is the only signal we have). When our country IS a confirmed Tier-1, Capitalbot's
+    tierFiltered must not reject the fan."""
+    if chat.ai_state_reason == "tierFiltered":
+        if reliable_country and reliable_country in tier1:
+            return None
         return "NON_T1"
     if chat.ai_state == "filtered":
         return None  # genderFiltered / ignored / messagedAlready / internalAccount — not a tier call
@@ -127,6 +145,8 @@ class Service:
             chat.peer_username = chat.peer_username or msg.peer.username
             chat.peer_name = chat.peer_name or msg.peer.name
             chat.peer_phone = chat.peer_phone or msg.peer.phone
+            if msg.peer.access_hash is not None:
+                chat.access_hash = msg.peer.access_hash  # refresh: it's how we reach them after a restart
 
             # First inbound sets the real conversation start (read from Telegram history once).
             if chat.first_in_at is None and not msg.out:
@@ -244,6 +264,14 @@ class Service:
         """The resolved country for a chat, if it's been resolved this process lifetime (for display)."""
         return self._peer_country.get((account_id, str(peer_id)))
 
+    def _reliable_country(self, chat: Chat) -> str | None:
+        """A country we resolved ourselves — a visible phone or Telegram's PeerSettings phone-country —
+        never Capitalbot's name-based guess. None when we don't reliably know it."""
+        info = self.cached_country(chat.account_id, chat.peer_id)
+        if info and info.get("source") in tier.RELIABLE_SOURCES and info.get("country"):
+            return info["country"]
+        return tier.country_for_phone(chat.peer_phone)
+
     async def resolve_peer_country(self, account_id: int, peer_id: str) -> dict:
         """Resolve a chat's country, cached per (account, peer): visible phone → Telegram PeerSettings
         phone_country (shown for non-contacts even when the number is hidden) → unknown. On first
@@ -264,7 +292,7 @@ class Service:
                 client = self.manager.get(account_id)
                 if client is not None:
                     try:
-                        pc = await client.get_peer_country(int(peer_id))
+                        pc = await client.get_peer_country(int(peer_id), access_hash=chat.access_hash)
                     except TgError as e:
                         log.debug("peer-country lookup failed account=%s peer=%s: %s", account_id, peer_id, e.detail)
                         return {"country": None, "source": "hidden"}  # transient (e.g. FloodWait): don't cache, retry later
@@ -293,11 +321,21 @@ class Service:
             if chat is None:
                 return
             await self._report_chat(session, acc, chat)  # first / reply (the reply event carries a T1 verdict)
-            if chat.first_in_at is not None and _ai_tier(chat) == "NON_T1":
-                # tierFiltered sends no reply, so the verdict rides its own event. Reported once: the
-                # chat is now 'filtered' and won't be called again, so this runs a single time.
+            tier1 = await get_setting(session, "tier1_countries", None) or tier.DEFAULT_TIER1
+            reliable = self._reliable_country(chat)
+            verdict = _tier_verdict(chat, reliable, list(tier1))
+            if chat.first_in_at is not None and verdict == "NON_T1":
+                # tierFiltered (with no reliable Tier-1 country of our own) sends no reply, so the verdict
+                # rides its own event. Reported once: the chat is now 'filtered' and won't be called again.
                 await portal.enqueue_convo(
                     session, acc.username or str(acc.tg_user_id), str(acc.tg_user_id), chat, with_reply=False, tier="NON_T1", suffix="tier"
+                )
+            elif chat.ai_state_reason == "tierFiltered" and reliable and reliable in tier1:
+                # Capitalbot tier-filtered a fan OUR own country says is Tier 1 — don't reject them. Flag
+                # it so a no-filter preset can be set for this persona (client 2026-11-03).
+                await self.log_activity(
+                    session, "warn", "tier_override",
+                    f"@{peer_id}: Capitalbot tierFiltered but {reliable} is Tier 1 — not rejected; set a no-filter preset for this persona", account_id,
                 )
             if chat.ai_state == "converted":
                 await self._ensure_lead(session, acc, chat)  # record the converted fan for the Leads export
@@ -324,6 +362,45 @@ class Service:
             )
         )
         return True
+
+    async def warm_access_hashes(self) -> int:
+        """Warm each connected account's entity cache from its dialogs and store every peer's
+        access_hash, so replies to chats from before this run (the StringSession drops the cache on
+        restart) work immediately. Idempotent, best-effort, runs in the background at startup."""
+        updated = 0
+        async with self.sessionmaker() as session:
+            account_ids = [a.id for a in (await session.scalars(select(Account))).all()]
+        for account_id in account_ids:
+            client = self.manager.get(account_id)
+            if client is None:
+                continue
+            try:
+                pairs = await client.peer_access_hashes()
+            except TgError as e:
+                log.debug("warm_access_hashes: account %s: %s", account_id, e.detail)
+                continue
+            except Exception:
+                log.exception("warm_access_hashes failed for account %s", account_id)
+                continue
+            if not pairs:
+                continue
+            hashes = {pid: ah for pid, ah in pairs}
+            async with self.sessionmaker() as session:
+                chats = (
+                    await session.scalars(
+                        select(Chat).where(Chat.account_id == account_id, Chat.peer_id.in_(list(hashes.keys())))
+                    )
+                ).all()
+                for chat in chats:
+                    ah = hashes.get(chat.peer_id)
+                    if ah is not None and chat.access_hash != ah:
+                        chat.access_hash = ah
+                        updated += 1
+                if updated:
+                    await session.commit()
+        if updated:
+            log.info("warm_access_hashes: stored %s peer access_hash(es)", updated)
+        return updated
 
     async def backfill_leads(self) -> int:
         """One-time (idempotent) sweep: make a Lead for every already-converted chat that has none,

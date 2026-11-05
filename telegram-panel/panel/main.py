@@ -93,6 +93,11 @@ def create_app(settings: Settings | None = None, dist: Path = DIST, client_facto
                     await service.connect_powered_on()
                 except Exception:
                     log.exception("startup connect failed")
+                try:
+                    # Warm the entity cache from dialogs so replies to pre-restart chats work at once.
+                    await service.warm_access_hashes()
+                except Exception:
+                    log.exception("warm_access_hashes failed")
 
             app.state.background.add(asyncio.create_task(_deferred_startup(app.state.service)))
             app.state.background.add(asyncio.create_task(worker.run()))
@@ -101,7 +106,10 @@ def create_app(settings: Settings | None = None, dist: Path = DIST, client_facto
             housekeeper = Housekeeper(engine, sessionmaker, settings.data_dir)
             app.state.housekeeper = housekeeper
             app.state.recovery = None  # the last/current convo recovery job (routes/system.py)
+            app.state.reprocess = None  # the last/current tierFiltered re-process job (routes/system.py)
             app.state.background.add(asyncio.create_task(housekeeper.run()))
+            # Reply watchdog: re-attempts chats whose newest message is an unanswered fan message.
+            app.state.background.add(asyncio.create_task(engine_ai.watchdog_loop()))
             try:
                 yield
             finally:

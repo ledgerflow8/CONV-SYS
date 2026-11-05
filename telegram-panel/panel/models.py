@@ -107,6 +107,9 @@ class Chat(Base):
     peer_username: Mapped[str | None] = mapped_column(String(64))
     peer_name: Mapped[str | None] = mapped_column(String(256))
     peer_phone: Mapped[str | None] = mapped_column(String(32))  # E.164 with +
+    # The peer's Telegram access_hash: needed to build InputPeerUser so we can reach the chat after a
+    # restart (a StringSession doesn't persist Telethon's entity cache). Refreshed whenever we see them.
+    access_hash: Mapped[int | None] = mapped_column(BigInteger)
 
     first_in_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     first_reply_at: Mapped[datetime | None] = mapped_column(UTCDateTime)

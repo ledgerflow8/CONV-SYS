@@ -35,6 +35,9 @@ class FakeAccount:
     stories: list[int] = field(default_factory=list)  # own story ids
     music: list[int] = field(default_factory=list)  # saved-music doc ids
     peer_countries: dict[str, str] = field(default_factory=dict)  # peer_id str → PeerSettings phone_country
+    peer_hashes: dict[str, int] = field(default_factory=dict)  # peer_id str → access_hash Telegram/dialogs know
+    require_access_hash: bool = False  # when True, bare-id sends fail with no entity (models post-restart)
+    typing_error: bool = False  # when True, typing() always raises (must not block the actual text)
     # Full Telegram history per fan (peer id str → messages oldest first), for recovery scans.
     history: dict[str, list[IncomingMessage]] = field(default_factory=dict)
     scan_error: TgError | None = None  # raised by recent_peers (e.g. a long FloodWait)
@@ -61,6 +64,7 @@ class FakeClient:
         self.privacy_set: list[dict] = []
         self.stories_deleted = 0
         self.music_removed = 0
+        self._warmed = False  # whether the entity cache has been warmed from dialogs this "run"
 
     async def start(self) -> AccountInfo:
         self._dir.started.append(self._params.session)
@@ -107,23 +111,46 @@ class FakeClient:
         return self._params.session
 
     # ── sending (step 3) ──────────────────────────────────────────────────────
-    async def send_text(self, peer_id: int, text: str) -> int:
+    def _has_entity(self, peer_id: int) -> bool:
+        return self._warmed and bool(self._fake) and str(peer_id) in self._fake.peer_hashes
+
+    def _reachable(self, peer_id: int, access_hash: int | None) -> None:
+        """Mimic Telethon: a bare id with no cached entity (e.g. after a restart) can't be resolved."""
+        if access_hash is None and self._fake and self._fake.require_access_hash and not self._has_entity(peer_id):
+            raise ValueError(f"Could not find the input entity for PeerUser(user_id={peer_id})")
+
+    async def send_text(self, peer_id: int, text: str, access_hash: int | None = None) -> int:
+        self._reachable(peer_id, access_hash)
         self._next_id += 1
-        self.sent.append({"peer": peer_id, "type": "text", "text": text, "id": self._next_id})
+        self.sent.append({"peer": peer_id, "type": "text", "text": text, "id": self._next_id, "access_hash": access_hash})
         return self._next_id
 
-    async def send_file(self, peer_id: int, path: str, *, voice: bool = False) -> int:
+    async def send_file(self, peer_id: int, path: str, *, voice: bool = False, access_hash: int | None = None) -> int:
+        self._reachable(peer_id, access_hash)
         self._next_id += 1
-        self.sent.append({"peer": peer_id, "type": "voice" if voice else "file", "path": path, "id": self._next_id})
+        self.sent.append({"peer": peer_id, "type": "voice" if voice else "file", "path": path, "id": self._next_id, "access_hash": access_hash})
         return self._next_id
 
-    async def mark_read(self, peer_id: int) -> None:
+    async def mark_read(self, peer_id: int, access_hash: int | None = None) -> None:
+        self._reachable(peer_id, access_hash)
         self.read_marked += 1
 
-    async def typing(self, peer_id: int, seconds: float) -> None:
+    async def typing(self, peer_id: int, seconds: float, access_hash: int | None = None) -> None:
+        if self._fake and self._fake.typing_error:
+            raise TgError("error", "typing failed")
+        self._reachable(peer_id, access_hash)
         return  # instant in tests
 
-    async def download_message_media(self, peer_id: int, tg_msg_id: int, dest_dir: Path):
+    async def resolve_access_hash(self, peer_id: int) -> int | None:
+        if self._warmed and self._fake:
+            return self._fake.peer_hashes.get(str(peer_id))
+        return None
+
+    async def peer_access_hashes(self, limit=None):
+        self._warmed = True
+        return list((self._fake.peer_hashes.items()) if self._fake else [])
+
+    async def download_message_media(self, peer_id: int, tg_msg_id: int, dest_dir: Path, access_hash: int | None = None):
         data = self._fake.media.get((str(peer_id), tg_msg_id)) if self._fake else None
         if data is None:
             return None
@@ -220,7 +247,7 @@ class FakeClient:
         self.music_removed += n
         return n
 
-    async def get_peer_country(self, peer_id: int) -> str | None:
+    async def get_peer_country(self, peer_id: int, access_hash: int | None = None) -> str | None:
         return self._fake.peer_countries.get(str(peer_id)) if self._fake else None
 
     def on_private_message(self, cb) -> None:

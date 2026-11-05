@@ -36,11 +36,25 @@ HISTORY_MAX_BYTES = 200_000
 TYPING_CAP_SEC = 6.0
 DEFAULT_DEBOUNCE_SEC = 8
 DEFAULT_TYPING_CPS = 20
-CREDIT_OVER_PAUSE = timedelta(minutes=10)
+# When Capitalbot says credits are depleted we pause, then actively re-probe this often until a call
+# goes through clean (client feedback 2026-11-02: "re-probe and auto-resume within minutes"). It is a
+# re-probe cadence, not a dead window — each waiting chat retries itself when the interval elapses.
+CREDIT_OVER_PAUSE = timedelta(minutes=2)
 MEDIA_PER_MIN = 5
 MEDIA_PER_DAY = 30
 KEEP_CALLING = ("active", "converted")
 FILTER_FLAGS = ("tierFiltered", "genderFiltered", "ignored", "messagedAlready", "internalAccount")
+
+# Reply watchdog (client 2026-11-03): a safety net that re-attempts chats whose newest message is an
+# unanswered fan message, so a reply missed because of a brief disconnect, a credit pause or a dropped
+# debounce doesn't leave the fan stuck Pending. Bounded: only chats aged in [MIN, MAX], at most once per
+# RETRY_EVERY, and only while connected and not paused/on cooldown.
+WATCHDOG_INTERVAL_SEC = 300
+WATCHDOG_MIN_AGE = timedelta(minutes=10)
+WATCHDOG_MAX_AGE = timedelta(days=7)
+WATCHDOG_RETRY_EVERY = timedelta(hours=1)
+WATCHDOG_GAP_SEC = 0.3
+WATCHDOG_MAX_PER_SCAN = 300
 
 
 def build_chat_history(msgs: list[Message], *, max_messages: int = HISTORY_MESSAGES, max_bytes: int = HISTORY_MAX_BYTES) -> list[dict]:
@@ -93,8 +107,11 @@ class AiEngine:
         self._http = http
         self._sem = asyncio.Semaphore(MAX_IN_FLIGHT)
         self._debounce: dict[tuple[int, str], asyncio.Task] = {}
+        self._retries: dict[tuple[int, str], asyncio.Task] = {}  # credit-pause re-probes, one per chat
+        self._watchdog_seen: dict[tuple[int, str], datetime] = {}  # last watchdog re-attempt per chat
         self._chat_locks: dict[tuple[int, str], asyncio.Lock] = {}
         self.credit_over_until: datetime | None = None
+        self.credit_probe = CREDIT_OVER_PAUSE  # re-probe cadence while paused (overridable in tests)
         self.last_error: str | None = None
         # set by main.lifespan to Service.report_ai_outcome; reports the chat's convo state (and a
         # tierFiltered verdict that sends no reply) to the portal after each turn.
@@ -127,9 +144,90 @@ class AiEngine:
         async with self.sessionmaker() as s:
             return float(await get_setting(s, "ai_debounce_sec", DEFAULT_DEBOUNCE_SEC))
 
+    def _schedule_retry(self, account_id: int, peer_id: str, when: datetime) -> None:
+        """Re-probe this chat once `when` passes (used after a credit pause). At most one pending
+        retry per chat; the per-chat lock and the MAX_IN_FLIGHT semaphore keep a wake-up herd bounded."""
+        key = (account_id, peer_id)
+        old = self._retries.get(key)
+        if old is not None and not old.done():
+            return
+        self._retries[key] = asyncio.create_task(self._retry_after(key, account_id, peer_id, when))
+
+    async def _retry_after(self, key: tuple[int, str], account_id: int, peer_id: str, when: datetime) -> None:
+        try:
+            delay = (when - utcnow()).total_seconds()
+            if delay > 0:
+                await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            self._retries.pop(key, None)
+            return
+        # Pop before running so that, if the chat is still paused, _run_turn can arm the next probe.
+        self._retries.pop(key, None)
+        try:
+            await self.run_turn(account_id, peer_id)
+        except Exception:
+            log.exception("AI credit re-probe failed for account=%s peer=%s", account_id, peer_id)
+
     async def shutdown(self) -> None:
         for task in list(self._debounce.values()):
             task.cancel()
+        for task in list(self._retries.values()):
+            task.cancel()
+
+    # ── reply watchdog ─────────────────────────────────────────────────────────
+    async def watchdog_loop(self) -> None:
+        """Periodically re-attempt chats whose latest message is an unanswered fan message."""
+        while True:
+            try:
+                await asyncio.sleep(WATCHDOG_INTERVAL_SEC)
+                await self._watchdog_scan()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("reply watchdog failed")
+
+    async def _watchdog_scan(self) -> None:
+        if not self.capital.configured:
+            return
+        if self.credit_over_until and utcnow() < self.credit_over_until:
+            return  # paused; the credit re-probe handles resumption, no need to pile on
+        now = utcnow()
+        self._watchdog_seen = {k: v for k, v in self._watchdog_seen.items() if now - v < WATCHDOG_RETRY_EVERY}
+        async with self.sessionmaker() as s:
+            if not await get_setting(s, "ai_global_on", True):
+                return
+            rows = (
+                await s.scalars(select(Chat).where(Chat.ai_state.in_(KEEP_CALLING), Chat.last_in_at.is_not(None)))
+            ).all()
+            due: list[tuple[int, str]] = []
+            for c in rows:
+                if c.last_out_at is not None and c.last_in_at <= c.last_out_at:
+                    continue  # already answered
+                age = now - c.last_in_at
+                if age < WATCHDOG_MIN_AGE or age > WATCHDOG_MAX_AGE:
+                    continue
+                if c.cooldown_until is not None and now < c.cooldown_until:
+                    continue
+                if not self.manager.is_connected(c.account_id):
+                    continue  # it'll be retried once the account reconnects and is scanned again
+                key = (c.account_id, c.peer_id)
+                if key in self._watchdog_seen:
+                    continue
+                due.append(key)
+                if len(due) >= WATCHDOG_MAX_PER_SCAN:
+                    break
+        if not due:
+            return
+        for account_id, peer_id in due:
+            self._watchdog_seen[(account_id, peer_id)] = now
+            try:
+                await self.run_turn(account_id, peer_id)
+            except Exception:
+                log.exception("watchdog turn failed account=%s peer=%s", account_id, peer_id)
+            await asyncio.sleep(WATCHDOG_GAP_SEC)
+        async with self.sessionmaker() as s:
+            await self._log(s, "info", "ai_watchdog", f"reply watchdog re-attempted {len(due)} unanswered chat(s)", None)
+            await s.commit()
 
     # ── one turn for one chat ──────────────────────────────────────────────────
     async def run_turn(self, account_id: int, peer_id: str) -> None:
@@ -141,10 +239,17 @@ class AiEngine:
         if not self.capital.configured:
             return
         if self.credit_over_until and utcnow() < self.credit_over_until:
+            # Don't drop this fan turn: re-probe this chat when the pause lifts, so it resumes on its
+            # own even if no new fan message ever arrives (client feedback 2026-11-02, defects A & B).
+            self._schedule_retry(account_id, peer_id, self.credit_over_until)
             return
         req = await self._gather(account_id, peer_id)
         if req is None:
             return
+        # Make sure we can reach this peer after a restart: resolve + persist the access_hash if we
+        # don't have one yet (the StringSession drops Telethon's entity cache on every restart).
+        if req.get("access_hash") is None:
+            req["access_hash"] = await self._ensure_access_hash(account_id, peer_id)
 
         file_path: str | None = None
         try:
@@ -168,11 +273,9 @@ class AiEngine:
                 Path(file_path).unlink(missing_ok=True)
 
         self.last_error = None
-        if self.credit_over_until is not None and not resp.flag("aiCreditOver"):
-            self.credit_over_until = None  # a call went through without the flag → credits are back, resume now
         answered = await self._apply(account_id, peer_id, resp, uploaded=bool(file_path), out_before=req["out_before"])
         if resp.has_content and not answered and self.manager.is_connected(account_id):
-            await self._send(account_id, peer_id, resp)
+            await self._send(account_id, peer_id, resp, req.get("access_hash"))
         # Report the convo outcome to the portal — crucially, a tierFiltered verdict sends no reply,
         # so this is the only path that reports it (→ rejected non_tier1 instead of stuck Pending).
         if self.report_ai_outcome is not None:
@@ -196,7 +299,12 @@ class AiEngine:
                 return None
             if chat.cooldown_until is not None and utcnow() < chat.cooldown_until:
                 return None
-            gate = await self._tier_gate(s, profile, chat)
+            tier1 = await get_setting(s, "tier1_countries", None) or tier.DEFAULT_TIER1
+            nofilter = await get_setting(s, f"nofilter_preset:{profile.id}", None)
+            # Resolve the country once (visible phone → Telegram PeerSettings) when either the pre-filter
+            # needs it or this persona has a no-filter preset to switch to for a confirmed Tier-1 fan.
+            info = await self._resolve_country(chat) if (self.phone_filter_enabled or nofilter is not None) else None
+            gate = await self._tier_gate(s, profile, chat, info, list(tier1))
             if gate == tier.REJECT_NON_TIER1:
                 # Visible non-Tier-1 phone: don't pay Capitalbot. The portal already has the phone
                 # (sent on the first convo event) and rejects it as non_tier1 on its own.
@@ -207,6 +315,11 @@ class AiEngine:
             if gate == tier.SKIP:
                 await s.commit()  # hidden phone, owner set Tier-1-only to not reply: stay quiet this turn
                 return None
+            # When OUR own country is a confirmed Tier-1 (visible phone or Telegram phone-country), use
+            # the persona's no-filter preset so Capitalbot's name-based tier guess can't drop a real
+            # Tier-1 fan (client 2026-11-03). Unknown country → the normal preset (tier filter on).
+            reliable_t1 = bool(info and info.get("source") in tier.RELIABLE_SOURCES and (info.get("country") or "") in tier1)
+            preset_id = int(nofilter) if (reliable_t1 and nofilter is not None) else int(profile.capital_preset_id)
             rows = (
                 await s.scalars(
                     select(Message)
@@ -226,7 +339,7 @@ class AiEngine:
                 user_infos["username"] = chat.peer_username
             return {
                 "model_id": profile.capital_model_id,
-                "preset_id": profile.capital_preset_id,
+                "preset_id": preset_id,
                 "account_id": str(acc.tg_user_id),
                 "user_infos": user_infos,
                 "history": history,
@@ -234,28 +347,32 @@ class AiEngine:
                 "out_before": chat.last_out_at,
                 "media": self._pick_fan_media(msgs, chat.last_out_at),
                 "media_counter": dict(chat.media_uploads or {}),
+                "access_hash": chat.access_hash,
             }
 
-    async def _tier_gate(self, s: AsyncSession, profile: Profile, chat: Chat) -> str:
-        """Resolve the Tier-1 filter for this chat: global settings, with a per-persona override."""
+    async def _resolve_country(self, chat: Chat) -> dict:
+        """This chat's country and how we know it ({"country", "source"}): visible phone → Telegram
+        PeerSettings phone_country → hidden. The resolver (Service.resolve_peer_country) caches and
+        keeps phonenumbers off the event loop; without it (step-1/2 tests) we use the visible phone."""
+        if self.resolve_country is not None:
+            return await self.resolve_country(chat.account_id, chat.peer_id)
+        country = await asyncio.to_thread(tier.country_for_phone, chat.peer_phone)
+        return {"country": country, "source": "phone" if country else "hidden"}
+
+    async def _tier_gate(self, s: AsyncSession, profile: Profile, chat: Chat, info: dict | None, tier1: list[str]) -> str:
+        """The Tier-1 pre-filter decision from the already-resolved country `info`: global settings,
+        with a per-persona override. Feature flag off → never filter."""
         if not self.phone_filter_enabled:
-            return tier.ALLOW  # feature flag off → no filtering at all
+            return tier.ALLOW
         enabled = bool(await get_setting(s, "tier1_only", False))
         hidden = await get_setting(s, "tier1_hidden", "ai")
-        tier1 = await get_setting(s, "tier1_countries", None) or tier.DEFAULT_TIER1
         override = await get_setting(s, f"tier1_profile:{profile.id}", None)
         if isinstance(override, dict):
             if override.get("only") is not None:
                 enabled = bool(override["only"])
             if override.get("hidden"):
                 hidden = override["hidden"]
-        # Country order: visible phone → Telegram PeerSettings phone_country → hidden-phone rule.
-        # The resolver caches and keeps phonenumbers (synchronous) off the event loop.
-        if self.resolve_country is not None:
-            country = (await self.resolve_country(chat.account_id, chat.peer_id))["country"]
-        else:
-            country = await asyncio.to_thread(tier.country_for_phone, chat.peer_phone)
-        return tier.tier_decision(country, enabled=enabled, hidden_mode=hidden, tier1=list(tier1))
+        return tier.tier_decision((info or {}).get("country"), enabled=enabled, hidden_mode=hidden, tier1=list(tier1))
 
     def _pick_fan_media(self, msgs: list[Message], out_before: datetime | None) -> Message | None:
         """The newest uploadable fan media since the last reply (PLAN.md §4.3 step 6)."""
@@ -263,6 +380,24 @@ class AiEngine:
             if m.direction == "in" and m.kind in UPLOADABLE_KINDS and (out_before is None or m.at > out_before):
                 return m
         return None
+
+    async def _ensure_access_hash(self, account_id: int, peer_id: str) -> int | None:
+        """Resolve the peer's access_hash from the live entity cache and persist it, so later turns
+        (and restarts) can reach the chat. Returns the hash or None; best-effort, never raises."""
+        client = self.manager.get(account_id)
+        if client is None:
+            return None
+        try:
+            ah = await client.resolve_access_hash(int(peer_id))
+        except Exception:
+            ah = None
+        if ah is not None:
+            async with self.sessionmaker() as s:
+                chat = await s.scalar(select(Chat).where(Chat.account_id == account_id, Chat.peer_id == peer_id))
+                if chat is not None and chat.access_hash != ah:
+                    chat.access_hash = ah
+                    await s.commit()
+        return ah
 
     async def _maybe_download_fan_media(self, account_id: int, peer_id: str, req: dict) -> str | None:
         media: Message | None = req["media"]
@@ -272,7 +407,7 @@ class AiEngine:
         if client is None:
             return None
         try:
-            got = await client.download_message_media(int(peer_id), media.tg_msg_id, self.media_dir)
+            got = await client.download_message_media(int(peer_id), media.tg_msg_id, self.media_dir, access_hash=req.get("access_hash"))
         except Exception:
             log.exception("fan media download failed account=%s peer=%s", account_id, peer_id)
             return None
@@ -310,8 +445,17 @@ class AiEngine:
             if note:
                 await self._log(s, "info" if note[0] else "warn", "ai_flag", f"@{peer_id}: {note[1]}", account_id)
             if resp.flag("aiCreditOver"):
-                self.credit_over_until = utcnow() + CREDIT_OVER_PAUSE
-                await self._log(s, "error", "ai_credit_over", "Capitalbot AI credits are depleted; pausing AI for 10 min", account_id)
+                self.credit_over_until = utcnow() + self.credit_probe
+                mins = max(1, round(self.credit_probe.total_seconds() / 60))
+                await self._log(s, "error", "ai_credit_over", f"Capitalbot AI credits are depleted; pausing AI and re-probing every {mins} min until they return", account_id)
+                # Arm the re-probe from the chat that hit depletion, so credits auto-resume even with
+                # no further fan traffic (client feedback 2026-11-02, defect B).
+                self._schedule_retry(account_id, peer_id, self.credit_over_until)
+            elif self.credit_over_until is not None:
+                # A call went through without the flag → credits are back. Resume now, and log the end
+                # of the pause so its start/stop window is visible in the activity log (item 1).
+                self.credit_over_until = None
+                await self._log(s, "info", "ai_credit_resume", "Capitalbot responded without the credits flag; AI resumed", account_id)
             if not resp.has_content and resp.stop_flag is None and not resp.flag("chatCooldown"):
                 # Empty content with no flag is a Capitalbot bug (docs): log it with the body.
                 await self._log(s, "error", "ai_empty", f"empty content, no flag; convId={resp.conversation_id} body={json.dumps(resp.raw)[:400]}", account_id)
@@ -358,14 +502,16 @@ class AiEngine:
             await s.commit()
 
     # ── sending ──────────────────────────────────────────────────────────────
-    async def _send(self, account_id: int, peer_id: str, resp: CapitalResponse) -> None:
+    async def _send(self, account_id: int, peer_id: str, resp: CapitalResponse, access_hash: int | None = None) -> None:
         client = self.manager.get(account_id)
         if client is None:
             return
         peer = int(peer_id)
         cps = await self._typing_cps()
+        # mark_read / typing / set_online are cosmetic: a failure (e.g. no entity after a restart)
+        # must never stop us from sending the actual reply.
         try:
-            await client.mark_read(peer)
+            await client.mark_read(peer, access_hash=access_hash)
         except Exception:
             log.warning("mark_read failed account=%s peer=%s", account_id, peer_id)
         try:
@@ -375,19 +521,25 @@ class AiEngine:
         for item in resp.content:
             try:
                 if item.type == "text":
-                    await client.typing(peer, min(TYPING_CAP_SEC, max(0.5, len(item.content) / cps)))
-                    mid = await client.send_text(peer, item.content)
+                    try:
+                        await client.typing(peer, min(TYPING_CAP_SEC, max(0.5, len(item.content) / cps)), access_hash=access_hash)
+                    except Exception:
+                        log.warning("typing failed account=%s peer=%s; sending anyway", account_id, peer_id)
+                    mid = await client.send_text(peer, item.content, access_hash=access_hash)
                     kind, text = "text", item.content
                 else:
-                    mid = await self._send_media(client, peer, item)
+                    mid = await self._send_media(client, peer, item, access_hash)
                     if mid is None:
                         continue
                     kind, text = item.type, None
             except Exception:
                 # Never resend a reply: stop this chat's sequence and let the next fan message retrigger.
                 log.exception("send failed account=%s peer=%s; stopping sequence", account_id, peer_id)
+                detail = "a reply piece failed to send"
+                if access_hash is None:
+                    detail = "can't reach this chat (no access hash yet) — will retry once the entity cache warms"
                 async with self.sessionmaker() as s:
-                    await self._log(s, "warn", "ai_send_failed", f"@{peer_id}: a reply piece failed to send", account_id)
+                    await self._log(s, "warn", "ai_send_failed", f"@{peer_id}: {detail}", account_id)
                     await s.commit()
                 return
             await self.service_record(account_id, peer_id, mid, kind, text, utcnow())
@@ -395,7 +547,7 @@ class AiEngine:
     # set by main.lifespan to Service.record_ai_message (keeps ai.py free of a hard service import)
     service_record = None  # type: ignore[assignment]
 
-    async def _send_media(self, client, peer: int, item) -> int | None:
+    async def _send_media(self, client, peer: int, item, access_hash: int | None = None) -> int | None:
         path, temp = await self._resolve_media(item.content)
         if path is None:
             async with self.sessionmaker() as s:
@@ -407,11 +559,11 @@ class AiEngine:
                 voice = await self._to_voice(path)
                 if voice is not None:
                     try:
-                        return await client.send_file(peer, str(voice), voice=True)
+                        return await client.send_file(peer, str(voice), voice=True, access_hash=access_hash)
                     finally:
                         voice.unlink(missing_ok=True)
-                return await client.send_file(peer, str(path))  # ffmpeg unavailable → plain audio file
-            return await client.send_file(peer, str(path))
+                return await client.send_file(peer, str(path), access_hash=access_hash)  # ffmpeg unavailable → plain audio file
+            return await client.send_file(peer, str(path), access_hash=access_hash)
         finally:
             if temp:
                 path.unlink(missing_ok=True)

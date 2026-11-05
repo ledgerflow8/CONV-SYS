@@ -13,7 +13,7 @@ import { scopeFor } from "@/lib/scope";
 import { getSetting } from "@/lib/settings";
 import { currentPeriods, inWeek, poolHealth, qualifiedTotals, qualifiedTotalsBy } from "@/lib/stats";
 import { EMPTY_POOL_MESSAGE } from "@/lib/team";
-import { FireInactiveVas } from "@/components/org-controls";
+import { FireInactiveVas, ReplaceTgButton } from "@/components/org-controls";
 import { AddVaButton, AssignAccountButton, VaRowActions } from "./team-controls";
 
 export default async function LeadVaDashboard() {
@@ -107,7 +107,11 @@ export default async function LeadVaDashboard() {
                   </div>
                   <VaRowActions vaId={va.id} username={va.username} joined={va.telegramUserId !== null} />
                 </div>
-                {!va.tgAccount && <AssignAccountButton vaId={va.id} username={va.username} poolEmpty={poolEmpty} />}
+                {va.tgAccount ? (
+                  <ReplaceTgButton vaId={va.id} username={va.username} currentAccount={va.tgAccount.username ?? null} />
+                ) : (
+                  <AssignAccountButton vaId={va.id} username={va.username} poolEmpty={poolEmpty} />
+                )}
               </li>
             ))}
           </ul>
