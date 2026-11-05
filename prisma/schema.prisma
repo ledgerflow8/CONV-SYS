@@ -28,6 +28,7 @@ enum TgStatus {
   ASSIGNED
   BANNED
   RETIRED
+  FROZEN
 }
 
 enum ConvoStatus {

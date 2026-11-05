@@ -9,6 +9,7 @@ const TONE: Record<string, string> = {
   FIRED: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200",
   DISABLED: "bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
   RETIRED: "bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
+  FROZEN: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-200",
   INACTIVE: "bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
   QUALIFIED: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200",
   PENDING: "bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",

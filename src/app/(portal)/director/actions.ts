@@ -8,7 +8,19 @@ import { createModel, renameModel, setModelActive } from "@/lib/models";
 import { createManagedUser, regeneratePassword, setLeadManagerStatus, type Credentials } from "@/lib/people";
 import { addPoolAccount, importPoolAccounts, type ImportSummary } from "@/lib/pool";
 import { importConvosCsv, type ConvoImportSummary } from "@/lib/convo-import";
-import { approvePendingConvos, MAX_PENDING_APPROVAL, retryConvo, reviewConvo, type IngestOutcome, type PendingApproval } from "@/lib/ingest";
+import {
+  approvePendingConvos,
+  countPendingOlderThan,
+  MAX_PENDING_APPROVAL,
+  rejectPendingConvos,
+  rejectPendingOlderThan,
+  retryConvo,
+  reviewConvo,
+  type BulkReject,
+  type IngestOutcome,
+  type PendingApproval,
+} from "@/lib/ingest";
+import { applyPeerReject, previewPeerReject, type PeerPreview, type PeerRejectOutcome } from "@/lib/reject-by-peer";
 import { clearAllWallets, lockFinishedWeeks, lockWeek, markPayoutFailed, markPayoutPaid, refreshPayoutWallet, type LockSummary } from "@/lib/payouts";
 import { createResource, deleteResource, prepareUpload } from "@/lib/resources";
 import { restoreAccount, takeAccountOutOfService, type TakeOutcome } from "@/lib/reassign";
@@ -201,6 +213,51 @@ export async function retryConvoAction(convoId: unknown): Promise<Result<IngestO
   if (!parsed.success) return fail("Invalid request.");
   const result = await retryConvo(actor, parsed.data);
   revalidatePath("/director/convos");
+  return result;
+}
+
+// ── Reject PENDING (Director / Lead Manager) ───────────────────────────────
+
+export async function rejectPendingConvosAction(convoIds: unknown): Promise<Result<BulkReject>> {
+  const actor = await requireRole("DIRECTOR", "LEAD_MANAGER");
+  const parsed = z.array(id).min(1).max(MAX_PENDING_APPROVAL).safeParse(convoIds);
+  if (!parsed.success) return fail(`Select between 1 and ${MAX_PENDING_APPROVAL} convos.`);
+  const result = await rejectPendingConvos(actor, parsed.data);
+  revalidatePath("/", "layout");
+  return result;
+}
+
+export async function countPendingOlderThanAction(hours: unknown): Promise<Result<{ count: number }>> {
+  const actor = await requireRole("DIRECTOR", "LEAD_MANAGER");
+  const parsed = z.coerce.number().int().safeParse(hours);
+  if (!parsed.success) return fail("Enter a whole number of hours.");
+  return countPendingOlderThan(actor, parsed.data);
+}
+
+export async function rejectPendingOlderThanAction(hours: unknown): Promise<Result<{ rejected: number }>> {
+  const actor = await requireRole("DIRECTOR", "LEAD_MANAGER");
+  const parsed = z.coerce.number().int().safeParse(hours);
+  if (!parsed.success) return fail("Enter a whole number of hours.");
+  const result = await rejectPendingOlderThan(actor, parsed.data);
+  revalidatePath("/", "layout");
+  return result;
+}
+
+// ── Reject by peer list (Director only; audit corrections) ─────────────────
+
+export async function previewPeerRejectAction(text: unknown): Promise<Result<PeerPreview>> {
+  const actor = await requireRole("DIRECTOR");
+  const parsed = z.string().max(2_000_000).safeParse(text);
+  if (!parsed.success) return fail("Paste the list of tgAccount, peerId lines.");
+  return previewPeerReject(actor, parsed.data);
+}
+
+export async function applyPeerRejectAction(text: unknown): Promise<Result<PeerRejectOutcome>> {
+  const actor = await requireRole("DIRECTOR");
+  const parsed = z.string().max(2_000_000).safeParse(text);
+  if (!parsed.success) return fail("Paste the list of tgAccount, peerId lines.");
+  const result = await applyPeerReject(actor, parsed.data);
+  revalidatePath("/", "layout");
   return result;
 }
 

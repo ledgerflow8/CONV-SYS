@@ -6,6 +6,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { fail, type Result } from "@/lib/action-result";
 import { requireUser } from "@/lib/auth/session";
+import { freeAccountsForVa, replaceFrozenTg, type ReplaceOutcome } from "@/lib/reassign";
 import {
   bulkMoveTeams,
   findInactiveVas,
@@ -81,6 +82,25 @@ export async function fireInactiveAction(days: unknown, vaIds: unknown): Promise
   const p = z.tuple([z.number().int(), z.array(id).max(1000)]).safeParse([days, vaIds]);
   if (!p.success) return fail("Invalid request.");
   const r = await fireInactiveVas(actor, ...p.data);
+  done();
+  return r;
+}
+
+// ── Replace a VA's frozen Telegram account (Lead VA / Lead Manager / Director) ──
+
+export async function freeAccountsForVaAction(vaId: unknown): Promise<Result<{ id: string; username: string }[]>> {
+  const actor = await requireUser();
+  const p = id.safeParse(vaId);
+  return p.success ? freeAccountsForVa(actor, p.data) : fail("Invalid request.");
+}
+
+export async function replaceFrozenTgAction(vaId: unknown, accountId: unknown): Promise<Result<ReplaceOutcome>> {
+  const actor = await requireUser();
+  const vp = id.safeParse(vaId);
+  if (!vp.success) return fail("Invalid request.");
+  const ap = accountId == null || accountId === "" ? null : id.safeParse(accountId);
+  if (ap && !ap.success) return fail("Invalid account.");
+  const r = await replaceFrozenTg(actor, vp.data, ap && ap.success ? { accountId: ap.data } : {});
   done();
   return r;
 }

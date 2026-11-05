@@ -3,7 +3,7 @@
 // Fire / move team / fire inactive / rename: every bulk or destructive action previews first and
 // needs an explicit confirm (client feedback 2026-10-18).
 import { useState, useTransition } from "react";
-import { ArrowRightLeft, Pencil, UserMinus } from "lucide-react";
+import { ArrowRightLeft, Pencil, RefreshCw, UserMinus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -15,10 +15,12 @@ import {
   findInactiveAction,
   fireInactiveAction,
   fireUserAction,
+  freeAccountsForVaAction,
   moveTeamAction,
   planBulkMoveAction,
   planFireAction,
   planTeamMoveAction,
+  replaceFrozenTgAction,
 } from "@/app/(portal)/org-actions";
 import { renameModelAction } from "@/app/(portal)/director/actions";
 
@@ -26,6 +28,85 @@ type ModelOption = { id: string; name: string };
 const ROLE: Record<string, string> = { LEAD_MANAGER: "Lead Manager", LEAD_VA: "Lead VA", VA: "VA" };
 const select = "h-9 w-full rounded-md border bg-background px-3 text-sm";
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+// ── Replace a VA's frozen Telegram account ─────────────────────────────────
+
+export function ReplaceTgButton({ vaId, username, currentAccount }: { vaId: string; username: string; currentAccount: string | null }) {
+  const [open, setOpen] = useState(false);
+  const [choose, setChoose] = useState(false);
+  const [accounts, setAccounts] = useState<{ id: string; username: string }[] | null>(null);
+  const [pick, setPick] = useState("");
+  const [pending, startTransition] = useTransition();
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const loadAccounts = () =>
+    startTransition(async () => {
+      setChoose(true);
+      const r = await freeAccountsForVaAction(vaId);
+      setAccounts(r.ok ? r.data : []);
+      if (!r.ok) setMsg({ ok: false, text: r.error });
+    });
+
+  const replace = () =>
+    startTransition(async () => {
+      const r = await replaceFrozenTgAction(vaId, pick || null);
+      if (!r.ok) return setMsg({ ok: false, text: r.error });
+      setMsg({
+        ok: true,
+        text: `${currentAccount ? `@${currentAccount} frozen. ` : ""}Now on @${r.data.newAccount}${r.data.notified === "sent" ? "; VA notified on Telegram" : " (VA not linked to Telegram yet)"}.`,
+      });
+      setOpen(false);
+    });
+
+  return (
+    <>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={() => { setOpen(true); setMsg(null); setChoose(false); setPick(""); }}
+        aria-label={`Replace Telegram account for ${username}`}
+      >
+        <RefreshCw className="size-4" />
+        Replace TG
+      </Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Replace {username}&apos;s Telegram account</DialogTitle>
+            <DialogDescription>
+              {currentAccount ? `@${currentAccount} is frozen` : "No current account"} and kept with all its past convos. {username} gets a free
+              account from the pool and their tracking link follows automatically.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 text-sm">
+            {!choose ? (
+              <button type="button" className="text-primary underline" onClick={loadAccounts}>
+                Choose a specific account instead of auto-picking
+              </button>
+            ) : accounts === null ? (
+              <p className="text-muted-foreground">Loading free accounts…</p>
+            ) : accounts.length === 0 ? (
+              <p className="text-muted-foreground">No free accounts to choose from — auto-pick will also fail. Add to the pool.</p>
+            ) : (
+              <select value={pick} onChange={(e) => setPick(e.target.value)} className={select} aria-label="Pick an account">
+                <option value="">Auto-pick the next free account</option>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>@{a.username}</option>
+                ))}
+              </select>
+            )}
+            {msg && <p className={msg.ok ? "text-emerald-700 dark:text-emerald-400" : "text-destructive"}>{msg.text}</p>}
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setOpen(false)} disabled={pending}>Cancel</Button>
+            <Button onClick={replace} disabled={pending}>{pending ? "Replacing…" : "Freeze & replace"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {msg && !open && <span className={`text-xs ${msg.ok ? "text-muted-foreground" : "text-destructive"}`}>{msg.text}</span>}
+    </>
+  );
+}
 
 // ── Fire ─────────────────────────────────────────────────────────────────
 

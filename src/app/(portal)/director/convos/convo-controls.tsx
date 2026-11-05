@@ -15,7 +15,16 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { ConvoImportSummary } from "@/lib/convo-import";
-import { approvePendingConvosAction, importConvosAction, retryConvoAction, reviewConvoAction, syncCapitalAINowAction } from "../actions";
+import {
+  approvePendingConvosAction,
+  countPendingOlderThanAction,
+  importConvosAction,
+  rejectPendingConvosAction,
+  rejectPendingOlderThanAction,
+  retryConvoAction,
+  reviewConvoAction,
+  syncCapitalAINowAction,
+} from "../actions";
 
 export function ReviewActions({ convoId, canApprove }: { convoId: string; canApprove: boolean }) {
   const [pending, startTransition] = useTransition();
@@ -202,21 +211,34 @@ export function PendingApproveList({ rows, currentWeek }: { rows: { id: string; 
       return n;
     });
 
+  const [rejectConfirm, setRejectConfirm] = useState(false);
+  const summariseSkips = (skipped: { reason: string }[]) =>
+    Object.entries(skipped.reduce<Record<string, number>>((m, s) => ({ ...m, [s.reason]: (m[s.reason] ?? 0) + 1 }), {}))
+      .map(([reason, n]) => `${n} ${reason.toLowerCase()}`)
+      .join(", ");
+
   const approve = () =>
     startTransition(async () => {
       const r = await approvePendingConvosAction([...selected]);
       setConfirm(false);
       if (!r.ok) return setMsg({ ok: false, text: r.error });
       const { approved, late, skipped } = r.data;
-      const reasons = Object.entries(skipped.reduce<Record<string, number>>((m, s) => ({ ...m, [s.reason]: (m[s.reason] ?? 0) + 1 }), {}))
-        .map(([reason, n]) => `${n} ${reason.toLowerCase()}`)
-        .join(", ");
       setMsg({
         ok: true,
         text:
           `Approved ${approved}${late ? ` (${late} paid in ${currentWeek}, since their own week is locked)` : ""}.` +
-          (skipped.length ? ` Skipped ${skipped.length}: ${reasons}.` : ""),
+          (skipped.length ? ` Skipped ${skipped.length}: ${summariseSkips(skipped)}.` : ""),
       });
+      setSelected(new Set());
+    });
+
+  const reject = () =>
+    startTransition(async () => {
+      const r = await rejectPendingConvosAction([...selected]);
+      setRejectConfirm(false);
+      if (!r.ok) return setMsg({ ok: false, text: r.error });
+      const { rejected, skipped } = r.data;
+      setMsg({ ok: true, text: `Rejected ${rejected}.` + (skipped.length ? ` Skipped ${skipped.length}: ${summariseSkips(skipped)}.` : "") });
       setSelected(new Set());
     });
 
@@ -227,10 +249,35 @@ export function PendingApproveList({ rows, currentWeek }: { rows: { id: string; 
           {all ? "Clear selection" : `Select all shown (${rows.length})`}
         </Button>
         <span className="text-muted-foreground">{selected.size} selected</span>
-        <Button size="sm" disabled={selected.size === 0 || pending} onClick={() => setConfirm(true)}>
+        <Button size="sm" disabled={selected.size === 0 || pending} onClick={() => { setConfirm(true); setRejectConfirm(false); }}>
           Approve selected
         </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="text-destructive hover:text-destructive"
+          disabled={selected.size === 0 || pending}
+          onClick={() => { setRejectConfirm(true); setConfirm(false); }}
+        >
+          Reject selected
+        </Button>
       </div>
+      {rejectConfirm && (
+        <div className="space-y-2 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm">
+          <p>
+            Reject <strong>{selected.size}</strong> pending {selected.size === 1 ? "convo" : "convos"}? They stop counting toward anyone&apos;s
+            commission. Anything no longer pending, out of your scope, or in a locked week is skipped.
+          </p>
+          <div className="flex gap-2">
+            <Button size="sm" variant="destructive" disabled={pending} onClick={reject}>
+              {pending ? "Rejecting…" : `Confirm: reject ${selected.size}`}
+            </Button>
+            <Button size="sm" variant="ghost" disabled={pending} onClick={() => setRejectConfirm(false)}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
       {confirm && (
         <div className="space-y-2 rounded-lg border border-primary/40 bg-primary/5 p-3 text-sm">
           <p>
@@ -266,6 +313,67 @@ export function PendingApproveList({ rows, currentWeek }: { rows: { id: string; 
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+/** "Reject pending older than [N] hours" — preview the count, then confirm. Director / Lead Manager. */
+export function RejectOlderThan() {
+  const [hours, setHours] = useState("48");
+  const [preview, setPreview] = useState<number | null>(null);
+  const [pending, startTransition] = useTransition();
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const check = () =>
+    startTransition(async () => {
+      setMsg(null);
+      const r = await countPendingOlderThanAction(Number(hours));
+      if (!r.ok) return setMsg({ ok: false, text: r.error });
+      setPreview(r.data.count);
+    });
+
+  const apply = () =>
+    startTransition(async () => {
+      const r = await rejectPendingOlderThanAction(Number(hours));
+      setPreview(null);
+      setMsg(r.ok ? { ok: true, text: `Rejected ${r.data.rejected} pending convo${r.data.rejected === 1 ? "" : "s"}.` } : { ok: false, text: r.error });
+    });
+
+  return (
+    <div className="space-y-2 rounded-xl border bg-card p-3 text-sm">
+      <p className="font-medium">Reject old pending convos</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-muted-foreground">Pending older than</span>
+        <input
+          type="number"
+          min={1}
+          value={hours}
+          onChange={(e) => { setHours(e.target.value); setPreview(null); }}
+          aria-label="Hours"
+          className="h-9 w-20 rounded-md border bg-background px-2"
+        />
+        <span className="text-muted-foreground">hours</span>
+        <Button size="sm" variant="outline" disabled={pending || !hours} onClick={check}>
+          Preview count
+        </Button>
+      </div>
+      {preview !== null && (
+        <div className="space-y-2 rounded-lg border border-destructive/40 bg-destructive/5 p-3">
+          <p>
+            <strong>{preview}</strong> pending {preview === 1 ? "convo" : "convos"} in your scope are older than {hours} hour{hours === "1" ? "" : "s"}.
+            Reject {preview === 1 ? "it" : "them all"}? (Locked weeks are never touched.)
+          </p>
+          <div className="flex gap-2">
+            <Button size="sm" variant="destructive" disabled={pending || preview === 0} onClick={apply}>
+              {pending ? "Rejecting…" : `Confirm: reject ${preview}`}
+            </Button>
+            <Button size="sm" variant="ghost" disabled={pending} onClick={() => setPreview(null)}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+      {msg && <p className={msg.ok ? "text-emerald-700 dark:text-emerald-400" : "text-destructive"}>{msg.text}</p>}
     </div>
   );
 }
